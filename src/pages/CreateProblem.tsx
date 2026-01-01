@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -9,6 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { z } from 'zod';
 
@@ -22,6 +23,39 @@ const problemSchema = z.object({
   difficulty: z.string().optional(),
   units: z.string().optional(),
 });
+
+// Common timezones with their UTC offsets
+const TIMEZONES = [
+  { value: 'Pacific/Honolulu', label: 'Hawaii (HST)', offset: -10 },
+  { value: 'America/Anchorage', label: 'Alaska (AKST)', offset: -9 },
+  { value: 'America/Los_Angeles', label: 'Pacific (PST)', offset: -8 },
+  { value: 'America/Denver', label: 'Mountain (MST)', offset: -7 },
+  { value: 'America/Chicago', label: 'Central (CST)', offset: -6 },
+  { value: 'America/New_York', label: 'Eastern (EST)', offset: -5 },
+  { value: 'America/Sao_Paulo', label: 'Brasília (BRT)', offset: -3 },
+  { value: 'UTC', label: 'UTC', offset: 0 },
+  { value: 'Europe/London', label: 'London (GMT)', offset: 0 },
+  { value: 'Europe/Paris', label: 'Paris (CET)', offset: 1 },
+  { value: 'Europe/Berlin', label: 'Berlin (CET)', offset: 1 },
+  { value: 'Europe/Moscow', label: 'Moscow (MSK)', offset: 3 },
+  { value: 'Asia/Dubai', label: 'Dubai (GST)', offset: 4 },
+  { value: 'Asia/Kolkata', label: 'India (IST)', offset: 5.5 },
+  { value: 'Asia/Singapore', label: 'Singapore (SGT)', offset: 8 },
+  { value: 'Asia/Shanghai', label: 'China (CST)', offset: 8 },
+  { value: 'Asia/Tokyo', label: 'Tokyo (JST)', offset: 9 },
+  { value: 'Australia/Sydney', label: 'Sydney (AEST)', offset: 10 },
+  { value: 'Pacific/Auckland', label: 'Auckland (NZST)', offset: 12 },
+];
+
+function getUserTimezone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (TIMEZONES.some(t => t.value === tz)) return tz;
+    return 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
 
 export default function CreateProblem() {
   const { profile, refreshProfile } = useAuth();
@@ -38,9 +72,22 @@ export default function CreateProblem() {
     difficulty: '',
     units: '',
   });
+  const [timezone, setTimezone] = useState(getUserTimezone);
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPreview, setShowPreview] = useState(false);
+
+  // Convert local datetime to UTC ISO string based on selected timezone
+  const convertToUTC = useMemo(() => {
+    return (localDatetime: string, tz: string) => {
+      if (!localDatetime) return '';
+      const tzData = TIMEZONES.find(t => t.value === tz);
+      const offsetHours = tzData?.offset ?? 0;
+      const localDate = new Date(localDatetime);
+      const utcDate = new Date(localDate.getTime() - offsetHours * 60 * 60 * 1000);
+      return utcDate.toISOString();
+    };
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,12 +99,13 @@ export default function CreateProblem() {
     }
 
     try {
+      const deadlineUTC = convertToUTC(form.deadline, timezone);
       const data = {
         title: form.title.trim(),
         description: form.description.trim(),
         intended_answer: parseFloat(form.intended_answer),
         bounty: parseFloat(form.bounty),
-        deadline: form.deadline,
+        deadline: deadlineUTC,
         tags: form.tags,
         difficulty: form.difficulty,
         units: form.units,
@@ -260,6 +308,22 @@ export default function CreateProblem() {
                   />
                   {errors.deadline && <p className="text-sm text-destructive">{errors.deadline}</p>}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="timezone">Timezone</Label>
+                <Select value={timezone} onValueChange={setTimezone}>
+                  <SelectTrigger id="timezone">
+                    <SelectValue placeholder="Select timezone" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {TIMEZONES.map((tz) => (
+                      <SelectItem key={tz.value} value={tz.value}>
+                        {tz.label} (UTC{tz.offset >= 0 ? '+' : ''}{tz.offset})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
             </CardContent>
           </Card>
