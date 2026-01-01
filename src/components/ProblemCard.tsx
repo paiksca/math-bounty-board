@@ -79,7 +79,10 @@ export function ProblemCard({ problem }: ProblemCardProps) {
                 {problem.solution_count} solution{problem.solution_count !== 1 ? 's' : ''}
               </span>
             </div>
-            <span className={`flex items-center gap-1 ${isExpired ? 'text-destructive' : ''}`}>
+            <span 
+              className={`flex items-center gap-1 ${isExpired ? 'text-destructive' : ''}`}
+              title={new Date(problem.deadline).toLocaleString()}
+            >
               <Clock className="h-3 w-3" />
               {timeLeft}
             </span>

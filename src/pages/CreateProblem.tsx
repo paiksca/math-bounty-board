@@ -77,17 +77,23 @@ export default function CreateProblem() {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPreview, setShowPreview] = useState(false);
 
-  // Convert local datetime to UTC ISO string based on selected timezone
-  const convertToUTC = useMemo(() => {
-    return (localDatetime: string, tz: string) => {
-      if (!localDatetime) return '';
-      const tzData = TIMEZONES.find(t => t.value === tz);
-      const offsetHours = tzData?.offset ?? 0;
-      const localDate = new Date(localDatetime);
-      const utcDate = new Date(localDate.getTime() - offsetHours * 60 * 60 * 1000);
-      return utcDate.toISOString();
-    };
-  }, []);
+  // Convert datetime-local input (interpreted in selected timezone) to UTC ISO string
+  const convertToUTC = (localDatetime: string, tz: string): string => {
+    if (!localDatetime) return '';
+    const tzData = TIMEZONES.find(t => t.value === tz);
+    const offsetHours = tzData?.offset ?? 0;
+    // datetime-local gives us "YYYY-MM-DDTHH:mm" - we need to interpret this as the selected timezone
+    // Then convert to UTC by subtracting the timezone offset
+    const [datePart, timePart] = localDatetime.split('T');
+    const [year, month, day] = datePart.split('-').map(Number);
+    const [hours, minutes] = timePart.split(':').map(Number);
+    
+    // Create a UTC date representing the selected timezone's time
+    const utcMs = Date.UTC(year, month - 1, day, hours, minutes, 0, 0);
+    // Subtract the timezone offset to get actual UTC
+    const actualUtcMs = utcMs - (offsetHours * 60 * 60 * 1000);
+    return new Date(actualUtcMs).toISOString();
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
