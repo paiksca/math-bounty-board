@@ -275,7 +275,10 @@ export default function ProblemDetail() {
             </span>
             <span className={`flex items-center gap-1 ${isExpired ? 'text-destructive' : ''}`}>
               <Clock className="h-4 w-4" />
-              {format(new Date(problem.deadline), 'PPp')}
+              {new Date(problem.deadline).toLocaleString(undefined, {
+                dateStyle: 'medium',
+                timeStyle: 'short',
+              })}
             </span>
           </div>
         </div>
