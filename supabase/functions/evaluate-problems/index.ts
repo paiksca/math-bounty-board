@@ -62,33 +62,69 @@ serve(async (req) => {
         continue;
       }
 
-      // Calculate errors using Mean Squared Error (MSE)
+      // Calculate total pool (bounty + all stakes)
       const totalStake = solutions.reduce((sum: number, s: { stake: number }) => sum + Number(s.stake), 0);
       const pool = bounty + totalStake;
 
-      const scored = solutions.map((s: { id: string; submitter_id: string; answer: number; stake: number }) => {
+      interface ScoredSolution {
+        id: string;
+        submitter_id: string;
+        answer: number;
+        stake: number;
+        error: number;
+      }
+
+      // Calculate MSE for each solution
+      const scored: ScoredSolution[] = solutions.map((s: { id: string; submitter_id: string; answer: number; stake: number }) => {
         const answer = Number(s.answer);
         const stake = Number(s.stake);
-        // Calculate squared error (MSE component for this solution)
         const squaredError = Math.pow(answer - intendedAnswer, 2);
-        // Normalize by intended answer squared to get relative MSE (avoid division by zero)
-        const normalizedMSE = intendedAnswer !== 0 
-          ? squaredError / Math.pow(intendedAnswer, 2) 
-          : squaredError;
-        // Score: inverse of (1 + normalized MSE), weighted by stake
-        // Lower MSE = higher accuracy = higher score
-        const accuracy = 1 / (1 + normalizedMSE);
-        const score = accuracy * stake;
-        return { ...s, error: normalizedMSE, score, stake };
+        return { id: s.id, submitter_id: s.submitter_id, answer, stake, error: squaredError };
       });
 
-      const totalScore = scored.reduce((sum: number, s: { score: number }) => sum + s.score, 0);
+      // Check if anyone has zero error
+      const zeroErrorSolutions = scored.filter((s: ScoredSolution) => s.error === 0);
+      
+      interface PayoutResult {
+        id: string;
+        submitter_id: string;
+        error: number;
+        stake: number;
+        payout: number;
+      }
+      
+      let payoutResults: PayoutResult[];
+      
+      if (zeroErrorSolutions.length > 0) {
+        // Split pool among zero-error solutions based on stake
+        const zeroErrorTotalStake = zeroErrorSolutions.reduce((sum: number, s: ScoredSolution) => sum + s.stake, 0);
+        payoutResults = scored.map((s: ScoredSolution) => {
+          if (s.error === 0) {
+            const share = zeroErrorTotalStake > 0 ? s.stake / zeroErrorTotalStake : 1 / zeroErrorSolutions.length;
+            return { id: s.id, submitter_id: s.submitter_id, error: s.error, stake: s.stake, payout: pool * share };
+          } else {
+            return { id: s.id, submitter_id: s.submitter_id, error: s.error, stake: s.stake, payout: 0 };
+          }
+        });
+      } else {
+        // Score = stake / MSE (higher stake, lower error = higher score)
+        const scoresWithInverse = scored.map((s: ScoredSolution) => ({
+          ...s,
+          score: s.stake / s.error
+        }));
+        const totalScore = scoresWithInverse.reduce((sum: number, s: { score: number }) => sum + s.score, 0);
+        payoutResults = scoresWithInverse.map((s) => ({
+          id: s.id,
+          submitter_id: s.submitter_id,
+          error: s.error,
+          stake: s.stake,
+          payout: totalScore > 0 ? pool * (s.score / totalScore) : pool / scored.length
+        }));
+      }
 
       // Distribute payouts
-      for (const sol of scored) {
-        const share = totalScore > 0 ? sol.score / totalScore : 1 / solutions.length;
-        const payout = pool * share;
-        const netPayout = payout - sol.stake; // Net gain/loss
+      for (const sol of payoutResults) {
+        const netPayout = sol.payout - sol.stake; // Net gain/loss
 
         // Update solution with error and payout
         await supabase
@@ -108,7 +144,7 @@ serve(async (req) => {
           await supabase
             .from("profiles")
             .update({
-              currency: Number(profile.currency) + payout,
+              currency: Number(profile.currency) + sol.payout,
               reputation: Number(profile.reputation) + reputationChange,
               total_profit: Number(profile.total_profit) + netPayout,
             })
@@ -117,7 +153,7 @@ serve(async (req) => {
           await supabase.from("transactions").insert({
             user_id: sol.submitter_id,
             type: "payout",
-            amount: payout,
+            amount: sol.payout,
             problem_id: problem.id,
             solution_id: sol.id,
             description: `Payout for problem: ${problem.title}`,
