@@ -10,7 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
-import { Shield, Users, FileText, Ban, RotateCcw, XCircle } from 'lucide-react';
+import { Shield, Users, FileText, Ban, RotateCcw, XCircle, Play, Loader2 } from 'lucide-react';
 
 interface UserData {
   id: string;
@@ -40,6 +40,7 @@ export default function Admin() {
   const [loading, setLoading] = useState(true);
   const [searchUser, setSearchUser] = useState('');
   const [searchProblem, setSearchProblem] = useState('');
+  const [evaluating, setEvaluating] = useState(false);
 
   useEffect(() => {
     if (!authLoading && !isAdmin) {
@@ -145,6 +146,24 @@ export default function Admin() {
     fetchData();
   };
 
+  const triggerEvaluation = async () => {
+    setEvaluating(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('evaluate-problems');
+      
+      if (error) {
+        toast({ title: 'Error', description: error.message, variant: 'destructive' });
+      } else {
+        toast({ title: 'Evaluation Complete', description: `Evaluated ${data?.evaluated || 0} problems.` });
+        fetchData();
+      }
+    } catch (err) {
+      toast({ title: 'Error', description: 'Failed to run evaluation.', variant: 'destructive' });
+    } finally {
+      setEvaluating(false);
+    }
+  };
+
   const filteredUsers = users.filter((u) =>
     u.username.toLowerCase().includes(searchUser.toLowerCase())
   );
@@ -170,6 +189,23 @@ export default function Admin() {
           <p className="text-muted-foreground">
             Manage users, problems, and platform integrity.
           </p>
+          <Button 
+            onClick={triggerEvaluation} 
+            disabled={evaluating}
+            className="mt-4"
+          >
+            {evaluating ? (
+              <>
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                Evaluating...
+              </>
+            ) : (
+              <>
+                <Play className="h-4 w-4 mr-2" />
+                Run Evaluation Now
+              </>
+            )}
+          </Button>
         </div>
 
         <Tabs defaultValue="users">
