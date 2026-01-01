@@ -3,9 +3,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { Header } from '@/components/Header';
 import { ProblemCard } from '@/components/ProblemCard';
 import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Search, TrendingUp } from 'lucide-react';
+import { Search, Archive } from 'lucide-react';
 
 interface Problem {
   id: string;
@@ -22,11 +21,10 @@ interface Problem {
   solution_count: number;
 }
 
-export default function Index() {
+export default function PastProblems() {
   const [problems, setProblems] = useState<Problem[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [selectedTag, setSelectedTag] = useState<string | null>(null);
 
   useEffect(() => {
     fetchProblems();
@@ -40,9 +38,8 @@ export default function Index() {
         creator:profiles!problems_creator_id_fkey(username),
         solutions(count)
       `)
-      .eq('status', 'open')
-      .gt('deadline', new Date().toISOString())
-      .order('created_at', { ascending: false });
+      .or(`status.eq.evaluated,status.eq.invalidated,deadline.lt.${new Date().toISOString()}`)
+      .order('deadline', { ascending: false });
 
     if (!error && data) {
       const formatted = data.map((p) => ({
@@ -56,15 +53,11 @@ export default function Index() {
     setLoading(false);
   };
 
-  const allTags = [...new Set(problems.flatMap((p) => p.tags || []))];
-
-  const filteredProblems = problems.filter((p) => {
-    const matchesSearch =
+  const filteredProblems = problems.filter(
+    (p) =>
       p.title.toLowerCase().includes(search.toLowerCase()) ||
-      p.description.toLowerCase().includes(search.toLowerCase());
-    const matchesTag = !selectedTag || (p.tags && p.tags.includes(selectedTag));
-    return matchesSearch && matchesTag;
-  });
+      p.description.toLowerCase().includes(search.toLowerCase())
+  );
 
   return (
     <div className="min-h-screen bg-background">
@@ -73,45 +66,21 @@ export default function Index() {
       <main className="container py-8">
         <div className="mb-8">
           <h1 className="font-serif text-3xl font-bold text-foreground mb-2">
-            Open Problems
+            Past Problems
           </h1>
           <p className="text-muted-foreground">
-            Stake your currency on numerical solutions. Higher confidence, higher rewards.
+            View evaluated problems, intended answers, and solution results.
           </p>
         </div>
 
-        <div className="flex flex-col sm:flex-row gap-4 mb-6">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
-            <Input
-              placeholder="Search problems..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-10"
-            />
-          </div>
-          
-          {allTags.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              <Badge
-                variant={selectedTag === null ? 'default' : 'outline'}
-                className="cursor-pointer"
-                onClick={() => setSelectedTag(null)}
-              >
-                All
-              </Badge>
-              {allTags.slice(0, 5).map((tag) => (
-                <Badge
-                  key={tag}
-                  variant={selectedTag === tag ? 'default' : 'outline'}
-                  className="cursor-pointer"
-                  onClick={() => setSelectedTag(tag)}
-                >
-                  {tag}
-                </Badge>
-              ))}
-            </div>
-          )}
+        <div className="relative max-w-md mb-6">
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          <Input
+            placeholder="Search past problems..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-10"
+          />
         </div>
 
         {loading ? (
@@ -122,12 +91,10 @@ export default function Index() {
           </div>
         ) : filteredProblems.length === 0 ? (
           <div className="text-center py-16">
-            <TrendingUp className="mx-auto h-12 w-12 text-muted-foreground/50 mb-4" />
-            <h3 className="font-serif text-lg font-semibold mb-2">No Open Problems</h3>
+            <Archive className="mx-auto h-12 w-12 text-muted-foreground/50 mb-4" />
+            <h3 className="font-serif text-lg font-semibold mb-2">No Past Problems</h3>
             <p className="text-muted-foreground">
-              {search || selectedTag
-                ? 'No problems match your filters.'
-                : 'Be the first to create a problem!'}
+              Evaluated problems will appear here.
             </p>
           </div>
         ) : (
