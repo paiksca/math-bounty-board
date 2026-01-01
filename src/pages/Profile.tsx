@@ -1,13 +1,18 @@
 import { useState, useEffect } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 import { Header } from '@/components/Header';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Coins, Trophy, Calendar, TrendingUp, TrendingDown } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from '@/components/ui/dialog';
+import { Coins, Trophy, Calendar, TrendingUp, TrendingDown, Plus } from 'lucide-react';
 import { format } from 'date-fns';
+import { toast } from 'sonner';
 
 interface ProfileData {
   id: string;
@@ -29,9 +34,52 @@ interface Transaction {
 
 export default function Profile() {
   const { id } = useParams<{ id: string }>();
+  const { profile: authProfile } = useAuth();
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
+  const [addMoneyAmount, setAddMoneyAmount] = useState('');
+  const [addingMoney, setAddingMoney] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+
+  const isOwnProfile = authProfile?.id === id;
+
+  const handleAddMoney = async () => {
+    const amount = parseFloat(addMoneyAmount);
+    if (isNaN(amount) || amount <= 0) {
+      toast.error('Please enter a valid positive amount');
+      return;
+    }
+
+    setAddingMoney(true);
+    try {
+      // Update currency
+      const { error: updateError } = await supabase
+        .from('profiles')
+        .update({ currency: (profile?.currency || 0) + amount })
+        .eq('id', id);
+
+      if (updateError) throw updateError;
+
+      // Record transaction
+      await supabase.from('transactions').insert({
+        user_id: id,
+        type: 'deposit',
+        amount: amount,
+        description: 'Added funds to account',
+      });
+
+      toast.success(`Added ${amount.toFixed(2)} to your account`);
+      setAddMoneyAmount('');
+      setDialogOpen(false);
+      fetchProfile(); // Refresh data
+    } catch (error) {
+      console.error('Error adding money:', error);
+      toast.error('Failed to add money');
+    } finally {
+      setAddingMoney(false);
+    }
+  };
 
   useEffect(() => {
     if (id) {
@@ -81,6 +129,7 @@ export default function Profile() {
       payout: 'Payout',
       reputation_change: 'Reputation',
       admin_adjustment: 'Admin Adjustment',
+      deposit: 'Deposit',
     };
     return labels[type] || type;
   };
@@ -138,14 +187,49 @@ export default function Profile() {
                 </p>
               </div>
 
-              <div className="grid grid-cols-3 gap-6">
-                <div className="text-center">
-                  <div className="flex items-center justify-center gap-1 mb-1">
-                    <Coins className="h-5 w-5 text-chart-1" />
+              <div className="flex items-center gap-4">
+                {isOwnProfile && (
+                  <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                    <DialogTrigger asChild>
+                      <Button variant="outline" size="sm" className="gap-1">
+                        <Plus className="h-4 w-4" />
+                        Add Money
+                      </Button>
+                    </DialogTrigger>
+                    <DialogContent>
+                      <DialogHeader>
+                        <DialogTitle>Add Money to Account</DialogTitle>
+                      </DialogHeader>
+                      <div className="py-4">
+                        <Input
+                          type="number"
+                          placeholder="Amount to add"
+                          value={addMoneyAmount}
+                          onChange={(e) => setAddMoneyAmount(e.target.value)}
+                          min="0"
+                          step="0.01"
+                        />
+                      </div>
+                      <DialogFooter>
+                        <DialogClose asChild>
+                          <Button variant="outline">Cancel</Button>
+                        </DialogClose>
+                        <Button onClick={handleAddMoney} disabled={addingMoney}>
+                          {addingMoney ? 'Adding...' : 'Add Money'}
+                        </Button>
+                      </DialogFooter>
+                    </DialogContent>
+                  </Dialog>
+                )}
+
+                <div className="grid grid-cols-3 gap-6">
+                  <div className="text-center">
+                    <div className="flex items-center justify-center gap-1 mb-1">
+                      <Coins className="h-5 w-5 text-chart-1" />
+                    </div>
+                    <p className="font-mono text-xl font-bold">{profile.currency.toFixed(2)}</p>
+                    <p className="text-xs text-muted-foreground">Currency</p>
                   </div>
-                  <p className="font-mono text-xl font-bold">{profile.currency.toFixed(2)}</p>
-                  <p className="text-xs text-muted-foreground">Currency</p>
-                </div>
                 <div className="text-center">
                   <div className="flex items-center justify-center gap-1 mb-1">
                     <Trophy className="h-5 w-5 text-chart-2" />
@@ -157,20 +241,21 @@ export default function Profile() {
                   </p>
                   <p className="text-xs text-muted-foreground">Reputation</p>
                 </div>
-                <div className="text-center">
-                  <div className="flex items-center justify-center gap-1 mb-1">
-                    {profile.total_profit >= 0 ? (
-                      <TrendingUp className="h-5 w-5 text-chart-1" />
-                    ) : (
-                      <TrendingDown className="h-5 w-5 text-destructive" />
-                    )}
+                  <div className="text-center">
+                    <div className="flex items-center justify-center gap-1 mb-1">
+                      {profile.total_profit >= 0 ? (
+                        <TrendingUp className="h-5 w-5 text-chart-1" />
+                      ) : (
+                        <TrendingDown className="h-5 w-5 text-destructive" />
+                      )}
+                    </div>
+                    <p className={`font-mono text-xl font-bold ${
+                      profile.total_profit >= 0 ? 'text-chart-1' : 'text-destructive'
+                    }`}>
+                      {profile.total_profit >= 0 ? '+' : ''}{profile.total_profit.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">Total Profit</p>
                   </div>
-                  <p className={`font-mono text-xl font-bold ${
-                    profile.total_profit >= 0 ? 'text-chart-1' : 'text-destructive'
-                  }`}>
-                    {profile.total_profit >= 0 ? '+' : ''}{profile.total_profit.toFixed(2)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Total Profit</p>
                 </div>
               </div>
             </div>

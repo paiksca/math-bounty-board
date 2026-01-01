@@ -62,19 +62,24 @@ serve(async (req) => {
         continue;
       }
 
-      // Calculate errors and scores
+      // Calculate errors using Mean Squared Error (MSE)
       const totalStake = solutions.reduce((sum: number, s: { stake: number }) => sum + Number(s.stake), 0);
       const pool = bounty + totalStake;
 
       const scored = solutions.map((s: { id: string; submitter_id: string; answer: number; stake: number }) => {
         const answer = Number(s.answer);
         const stake = Number(s.stake);
-        const error = Math.abs(answer - intendedAnswer);
-        const relativeError = intendedAnswer !== 0 ? error / Math.abs(intendedAnswer) : error;
-        // Score: inverse of relative error, weighted by stake
-        const accuracy = 1 / (1 + relativeError);
+        // Calculate squared error (MSE component for this solution)
+        const squaredError = Math.pow(answer - intendedAnswer, 2);
+        // Normalize by intended answer squared to get relative MSE (avoid division by zero)
+        const normalizedMSE = intendedAnswer !== 0 
+          ? squaredError / Math.pow(intendedAnswer, 2) 
+          : squaredError;
+        // Score: inverse of (1 + normalized MSE), weighted by stake
+        // Lower MSE = higher accuracy = higher score
+        const accuracy = 1 / (1 + normalizedMSE);
         const score = accuracy * stake;
-        return { ...s, error: relativeError, score, stake };
+        return { ...s, error: normalizedMSE, score, stake };
       });
 
       const totalScore = scored.reduce((sum: number, s: { score: number }) => sum + s.score, 0);
