@@ -87,8 +87,10 @@ export default function CreateProblem() {
   });
   const [timezone, setTimezone] = useState(getUserTimezone);
   const [loading, setLoading] = useState(false);
+  const [validating, setValidating] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPreview, setShowPreview] = useState(false);
+  const [codeWarnings, setCodeWarnings] = useState<string[]>([]);
 
   // Update form when template changes
   useEffect(() => {
@@ -171,6 +173,52 @@ export default function CreateProblem() {
         return;
       }
 
+      setValidating(true);
+      setCodeWarnings([]);
+
+      // Validate cost function for security
+      try {
+        const costValidation = await supabase.functions.invoke('validate-code', {
+          body: { code: data.cost_function, codeType: 'cost_function' }
+        });
+
+        if (costValidation.error) {
+          throw new Error('Code validation service unavailable');
+        }
+
+        const costResult = costValidation.data;
+        if (!costResult.isValid) {
+          setErrors({ cost_function: `Security issue detected: ${costResult.issues.join(', ')}` });
+          setValidating(false);
+          return;
+        }
+        if (costResult.issues.length > 0) {
+          setCodeWarnings(prev => [...prev, ...costResult.issues.map((i: string) => `Cost function: ${i}`)]);
+        }
+
+        // Validate test input generator if custom
+        if (selectedTemplate === 'custom' && form.test_input_generator.trim()) {
+          const genValidation = await supabase.functions.invoke('validate-code', {
+            body: { code: form.test_input_generator, codeType: 'test_input_generator' }
+          });
+
+          if (!genValidation.error) {
+            const genResult = genValidation.data;
+            if (!genResult.isValid) {
+              setErrors({ test_input_generator: `Security issue detected: ${genResult.issues.join(', ')}` });
+              setValidating(false);
+              return;
+            }
+            if (genResult.issues.length > 0) {
+              setCodeWarnings(prev => [...prev, ...genResult.issues.map((i: string) => `Generator: ${i}`)]);
+            }
+          }
+        }
+      } catch (validationError) {
+        console.warn('Code validation failed, proceeding with caution:', validationError);
+      }
+
+      setValidating(false);
       setLoading(true);
 
       // Build test input generator with symbol/city substitution
@@ -411,11 +459,12 @@ export default function CreateProblem() {
                 <Textarea
                   value={form.test_input_generator}
                   onChange={(e) => setForm({ ...form, test_input_generator: e.target.value })}
-                  className="min-h-[150px] font-mono"
+                  className={`min-h-[150px] font-mono ${errors.test_input_generator ? 'border-destructive' : ''}`}
                 />
                 <p className="text-xs text-muted-foreground">
                   Available fetchers: fetch_stock("AAPL"), fetch_crypto("BTC"), fetch_weather("New York"), fetch_random(min, max, count)
                 </p>
+                {errors.test_input_generator && <p className="text-sm text-destructive">{errors.test_input_generator}</p>}
               </CardContent>
             </Card>
           )}
@@ -595,12 +644,26 @@ export default function CreateProblem() {
             </CardContent>
           </Card>
 
+          {/* Security Warnings */}
+          {codeWarnings.length > 0 && (
+            <Card className="border-yellow-500/50 bg-yellow-500/10">
+              <CardContent className="pt-4">
+                <p className="text-sm font-medium text-yellow-700 dark:text-yellow-400 mb-2">⚠️ Code Warnings</p>
+                <ul className="text-sm text-yellow-600 dark:text-yellow-500 list-disc pl-4 space-y-1">
+                  {codeWarnings.map((warning, i) => (
+                    <li key={i}>{warning}</li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          )}
+
           <div className="flex gap-4">
             <Button type="button" variant="outline" onClick={() => navigate('/')}>
               Cancel
             </Button>
-            <Button type="submit" disabled={loading}>
-              {loading ? 'Creating...' : 'Create Problem'}
+            <Button type="submit" disabled={loading || validating}>
+              {validating ? 'Validating code...' : loading ? 'Creating...' : 'Create Problem'}
             </Button>
           </div>
         </form>
