@@ -8,11 +8,15 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogClose } from '@/components/ui/dialog';
-import { Coins, Trophy, Calendar, TrendingUp, TrendingDown, Plus } from 'lucide-react';
+import { Trophy, Calendar, TrendingUp, TrendingDown, Wallet, ExternalLink, Link2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
+import { useAccount } from 'wagmi';
+import { WalletConnection } from '@/components/WalletConnection';
+import { useMNEEBalance } from '@/hooks/useMNEE';
+import { TransactionHash } from '@/components/TransactionStatus';
+import { getEtherscanAddressLink, MNEE_TO_CURRENCY_RATIO } from '@/lib/wagmi';
 
 interface ProfileData {
   id: string;
@@ -22,6 +26,7 @@ interface ProfileData {
   total_profit: number;
   is_frozen: boolean;
   created_at: string;
+  wallet_address: string | null;
 }
 
 interface Transaction {
@@ -29,6 +34,7 @@ interface Transaction {
   type: string;
   amount: number;
   description: string | null;
+  tx_hash: string | null;
   created_at: string;
 }
 
@@ -38,46 +44,33 @@ export default function Profile() {
   const [profile, setProfile] = useState<ProfileData | null>(null);
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [loading, setLoading] = useState(true);
-  const [addMoneyAmount, setAddMoneyAmount] = useState('');
-  const [addingMoney, setAddingMoney] = useState(false);
+  const [linkingWallet, setLinkingWallet] = useState(false);
   const [dialogOpen, setDialogOpen] = useState(false);
+
+  const { address, isConnected } = useAccount();
+  const { balanceFormatted, balanceAsCurrency } = useMNEEBalance();
 
   const isOwnProfile = authProfile?.id === id;
 
-  const handleAddMoney = async () => {
-    const amount = parseFloat(addMoneyAmount);
-    if (isNaN(amount) || amount <= 0) {
-      toast.error('Please enter a valid positive amount');
-      return;
-    }
+  const handleLinkWallet = async () => {
+    if (!address || !id) return;
 
-    setAddingMoney(true);
+    setLinkingWallet(true);
     try {
-      // Update currency
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({ currency: (profile?.currency || 0) + amount })
-        .eq('id', id);
-
-      if (updateError) throw updateError;
-
-      // Record transaction
-      await supabase.from('transactions').insert({
-        user_id: id,
-        type: 'deposit',
-        amount: amount,
-        description: 'Added funds to account',
+      const { error } = await supabase.functions.invoke('mnee-payments', {
+        body: { action: 'link_wallet', user_id: id, wallet_address: address }
       });
 
-      toast.success(`Added ${amount.toFixed(2)} to your account`);
-      setAddMoneyAmount('');
+      if (error) throw error;
+
+      toast.success('Wallet linked successfully!');
       setDialogOpen(false);
-      fetchProfile(); // Refresh data
+      fetchProfile();
     } catch (error) {
-      console.error('Error adding money:', error);
-      toast.error('Failed to add money');
+      console.error('Error linking wallet:', error);
+      toast.error('Failed to link wallet. It may already be linked to another account.');
     } finally {
-      setAddingMoney(false);
+      setLinkingWallet(false);
     }
   };
 
@@ -100,6 +93,7 @@ export default function Profile() {
         currency: Number(profileData.currency),
         reputation: Number(profileData.reputation),
         total_profit: Number(profileData.total_profit),
+        wallet_address: profileData.wallet_address || null,
       });
 
       // Fetch transactions for this user
@@ -114,6 +108,7 @@ export default function Profile() {
         setTransactions(txData.map((t) => ({
           ...t,
           amount: Number(t.amount),
+          tx_hash: (t as { tx_hash?: string | null }).tx_hash ?? null,
         })));
       }
     }
@@ -160,6 +155,10 @@ export default function Profile() {
     );
   }
 
+  const shortWalletAddress = profile.wallet_address 
+    ? `${profile.wallet_address.slice(0, 6)}...${profile.wallet_address.slice(-4)}`
+    : null;
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -185,62 +184,97 @@ export default function Profile() {
                   <Calendar className="h-4 w-4" />
                   Joined {format(new Date(profile.created_at), 'MMMM yyyy')}
                 </p>
+                
+                {/* Wallet Address */}
+                {profile.wallet_address ? (
+                  <a 
+                    href={getEtherscanAddressLink(profile.wallet_address)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline flex items-center gap-1 mt-1"
+                  >
+                    <Wallet className="h-4 w-4" />
+                    {shortWalletAddress}
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                ) : isOwnProfile && (
+                  <p className="text-sm text-muted-foreground flex items-center gap-1 mt-1">
+                    <Wallet className="h-4 w-4" />
+                    No wallet linked
+                  </p>
+                )}
               </div>
 
-              <div className="flex items-center gap-4">
+              <div className="flex flex-col items-end gap-4">
                 {isOwnProfile && (
-                  <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-                    <DialogTrigger asChild>
-                      <Button variant="outline" size="sm" className="gap-1">
-                        <Plus className="h-4 w-4" />
-                        Add Money
-                      </Button>
-                    </DialogTrigger>
-                    <DialogContent>
-                      <DialogHeader>
-                        <DialogTitle>Add Money to Account</DialogTitle>
-                      </DialogHeader>
-                      <div className="py-4">
-                        <Input
-                          type="number"
-                          placeholder="Amount to add"
-                          value={addMoneyAmount}
-                          onChange={(e) => setAddMoneyAmount(e.target.value)}
-                          min="0"
-                          step="0.01"
-                        />
-                      </div>
-                      <DialogFooter>
-                        <DialogClose asChild>
-                          <Button variant="outline">Cancel</Button>
-                        </DialogClose>
-                        <Button onClick={handleAddMoney} disabled={addingMoney}>
-                          {addingMoney ? 'Adding...' : 'Add Money'}
-                        </Button>
-                      </DialogFooter>
-                    </DialogContent>
-                  </Dialog>
+                  <div className="flex items-center gap-2">
+                    {!profile.wallet_address && isConnected && (
+                      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
+                        <DialogTrigger asChild>
+                          <Button variant="outline" size="sm" className="gap-1">
+                            <Link2 className="h-4 w-4" />
+                            Link Wallet
+                          </Button>
+                        </DialogTrigger>
+                        <DialogContent>
+                          <DialogHeader>
+                            <DialogTitle>Link Your Ethereum Wallet</DialogTitle>
+                          </DialogHeader>
+                          <div className="py-4 space-y-4">
+                            <p className="text-sm text-muted-foreground">
+                              Link your connected wallet to receive MNEE payouts directly on-chain.
+                            </p>
+                            <div className="p-4 rounded-lg bg-muted">
+                              <p className="text-sm text-muted-foreground mb-1">Connected Wallet:</p>
+                              <p className="font-mono text-sm break-all">{address}</p>
+                            </div>
+                            <div className="p-4 rounded-lg bg-muted">
+                              <p className="text-sm text-muted-foreground mb-1">MNEE Balance:</p>
+                              <p className="font-semibold">{balanceFormatted} MNEE</p>
+                              <p className="text-xs text-muted-foreground">
+                                ≈ {balanceAsCurrency.toFixed(2)} currency units
+                              </p>
+                            </div>
+                          </div>
+                          <DialogFooter>
+                            <DialogClose asChild>
+                              <Button variant="outline">Cancel</Button>
+                            </DialogClose>
+                            <Button onClick={handleLinkWallet} disabled={linkingWallet}>
+                              {linkingWallet ? 'Linking...' : 'Link Wallet'}
+                            </Button>
+                          </DialogFooter>
+                        </DialogContent>
+                      </Dialog>
+                    )}
+                    {!profile.wallet_address && !isConnected && (
+                      <WalletConnection />
+                    )}
+                  </div>
                 )}
 
                 <div className="grid grid-cols-3 gap-6">
+                  {/* MNEE Balance (if wallet connected) */}
                   <div className="text-center">
                     <div className="flex items-center justify-center gap-1 mb-1">
-                      <Coins className="h-5 w-5 text-chart-1" />
+                      <Wallet className="h-5 w-5 text-primary" />
                     </div>
-                    <p className="font-mono text-xl font-bold">{profile.currency.toFixed(2)}</p>
-                    <p className="text-xs text-muted-foreground">Currency</p>
+                    <p className="font-mono text-xl font-bold">
+                      {profile.wallet_address && isConnected ? balanceAsCurrency.toFixed(2) : '-'}
+                    </p>
+                    <p className="text-xs text-muted-foreground">MNEE Balance</p>
                   </div>
-                <div className="text-center">
-                  <div className="flex items-center justify-center gap-1 mb-1">
-                    <Trophy className="h-5 w-5 text-chart-2" />
+                  <div className="text-center">
+                    <div className="flex items-center justify-center gap-1 mb-1">
+                      <Trophy className="h-5 w-5 text-chart-2" />
+                    </div>
+                    <p className={`font-mono text-xl font-bold ${
+                      profile.reputation >= 0 ? 'text-chart-1' : 'text-destructive'
+                    }`}>
+                      {profile.reputation >= 0 ? '+' : ''}{profile.reputation.toFixed(2)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">Reputation</p>
                   </div>
-                  <p className={`font-mono text-xl font-bold ${
-                    profile.reputation >= 0 ? 'text-chart-1' : 'text-destructive'
-                  }`}>
-                    {profile.reputation >= 0 ? '+' : ''}{profile.reputation.toFixed(2)}
-                  </p>
-                  <p className="text-xs text-muted-foreground">Reputation</p>
-                </div>
                   <div className="text-center">
                     <div className="flex items-center justify-center gap-1 mb-1">
                       {profile.total_profit >= 0 ? (
@@ -262,6 +296,28 @@ export default function Profile() {
           </CardContent>
         </Card>
 
+        {/* Info Card about MNEE */}
+        {isOwnProfile && (
+          <Card className="mb-8 border-primary/20 bg-primary/5">
+            <CardContent className="pt-6">
+              <div className="flex items-start gap-4">
+                <div className="p-3 rounded-lg bg-primary/10">
+                  <Wallet className="h-6 w-6 text-primary" />
+                </div>
+                <div className="flex-1">
+                  <h3 className="font-semibold text-foreground mb-1">MNEE Payments Enabled</h3>
+                  <p className="text-sm text-muted-foreground">
+                    This platform uses MNEE (ERC-20 stablecoin on Sepolia Testnet) for all payments.
+                    Connect your wallet to participate in bounties and receive payouts directly on-chain.
+                    <br />
+                    <span className="font-medium">Ratio: 1 MNEE = {MNEE_TO_CURRENCY_RATIO} currency units</span>
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         <Card>
           <CardHeader>
             <CardTitle>Transaction History</CardTitle>
@@ -277,6 +333,7 @@ export default function Profile() {
                   <TableRow>
                     <TableHead>Type</TableHead>
                     <TableHead>Description</TableHead>
+                    <TableHead>Tx Hash</TableHead>
                     <TableHead className="text-right">Amount</TableHead>
                     <TableHead className="text-right">Date</TableHead>
                   </TableRow>
@@ -289,6 +346,13 @@ export default function Profile() {
                       </TableCell>
                       <TableCell className="text-muted-foreground max-w-xs truncate">
                         {tx.description || '-'}
+                      </TableCell>
+                      <TableCell>
+                        {tx.tx_hash ? (
+                          <TransactionHash hash={tx.tx_hash} />
+                        ) : (
+                          <span className="text-muted-foreground">-</span>
+                        )}
                       </TableCell>
                       <TableCell className={`text-right font-mono font-medium ${
                         tx.amount >= 0 ? 'text-chart-1' : 'text-destructive'

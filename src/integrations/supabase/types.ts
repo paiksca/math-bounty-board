@@ -99,6 +99,7 @@ export type Database = {
           updated_at: string
           user_id: string
           username: string
+          wallet_address: string | null
         }
         Insert: {
           created_at?: string
@@ -110,6 +111,7 @@ export type Database = {
           updated_at?: string
           user_id: string
           username: string
+          wallet_address?: string | null
         }
         Update: {
           created_at?: string
@@ -121,6 +123,7 @@ export type Database = {
           updated_at?: string
           user_id?: string
           username?: string
+          wallet_address?: string | null
         }
         Relationships: []
       }
@@ -186,6 +189,7 @@ export type Database = {
           id: string
           problem_id: string | null
           solution_id: string | null
+          tx_hash: string | null
           type: string
           user_id: string
         }
@@ -196,6 +200,7 @@ export type Database = {
           id?: string
           problem_id?: string | null
           solution_id?: string | null
+          tx_hash?: string | null
           type: string
           user_id: string
         }
@@ -206,6 +211,7 @@ export type Database = {
           id?: string
           problem_id?: string | null
           solution_id?: string | null
+          tx_hash?: string | null
           type?: string
           user_id?: string
         }

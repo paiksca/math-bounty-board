@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.validate-code]
 verify_jwt = false
+
+[functions.mnee-payments]
+verify_jwt = false
