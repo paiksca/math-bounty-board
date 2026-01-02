@@ -6,26 +6,35 @@ import { Header } from '@/components/Header';
 import { LatexRenderer } from '@/components/LatexRenderer';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
-import { Clock, Coins, User, Trophy, AlertTriangle } from 'lucide-react';
-import { format, isPast } from 'date-fns';
+import { Clock, Coins, User, Trophy, AlertTriangle, Code, Timer } from 'lucide-react';
+import { isPast } from 'date-fns';
+
+interface TestInputsRange {
+  min: number;
+  max: number;
+  count: number;
+}
 
 interface Problem {
   id: string;
   title: string;
   description: string;
-  intended_answer: number;
+  cost_function: string;
   bounty: number;
   deadline: string;
   status: string;
   tags: string[];
   difficulty: string | null;
-  units: string | null;
+  test_inputs_range: TestInputsRange;
+  test_input: number[] | null;
+  time_penalty_per_ms: number;
   creator: {
     id: string;
     username: string;
@@ -34,9 +43,11 @@ interface Problem {
 
 interface Solution {
   id: string;
-  answer: number;
+  algorithm: string;
   stake: number;
-  error: number | null;
+  output: unknown;
+  cost: number | null;
+  execution_time_ms: number | null;
   payout: number | null;
   created_at: string;
   submitter: {
@@ -56,7 +67,10 @@ export default function ProblemDetail() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   
-  const [answer, setAnswer] = useState('');
+  const [algorithm, setAlgorithm] = useState(`def solve(test_input):
+    # Your algorithm here
+    # test_input is a list of numbers
+    return 0`);
   const [stake, setStake] = useState('');
 
   useEffect(() => {
@@ -83,7 +97,9 @@ export default function ProblemDetail() {
     setProblem({
       ...problemData,
       bounty: Number(problemData.bounty),
-      intended_answer: Number(problemData.intended_answer),
+      time_penalty_per_ms: Number(problemData.time_penalty_per_ms),
+      test_inputs_range: problemData.test_inputs_range as unknown as TestInputsRange,
+      test_input: problemData.test_input as unknown as number[] | null,
     });
 
     // Fetch solutions (visible after deadline)
@@ -99,9 +115,9 @@ export default function ProblemDetail() {
     if (solutionsData) {
       const formatted = solutionsData.map((s) => ({
         ...s,
-        answer: Number(s.answer),
         stake: Number(s.stake),
-        error: s.error ? Number(s.error) : null,
+        cost: s.cost ? Number(s.cost) : null,
+        execution_time_ms: s.execution_time_ms ? Number(s.execution_time_ms) : null,
         payout: s.payout ? Number(s.payout) : null,
       }));
       setSolutions(formatted);
@@ -120,11 +136,10 @@ export default function ProblemDetail() {
     
     if (!profile || !problem) return;
     
-    const numAnswer = parseFloat(answer);
     const numStake = parseFloat(stake);
     
-    if (isNaN(numAnswer)) {
-      toast({ title: 'Invalid answer', description: 'Please enter a valid number.', variant: 'destructive' });
+    if (!algorithm.includes('def solve')) {
+      toast({ title: 'Invalid algorithm', description: 'Your code must define a solve(test_input) function.', variant: 'destructive' });
       return;
     }
     
@@ -155,7 +170,7 @@ export default function ProblemDetail() {
         .insert({
           problem_id: problem.id,
           submitter_id: profile.id,
-          answer: numAnswer,
+          algorithm,
           stake: numStake,
         })
         .select(`
@@ -180,9 +195,9 @@ export default function ProblemDetail() {
       
       setUserSolution({
         ...solution,
-        answer: Number(solution.answer),
         stake: Number(solution.stake),
-        error: null,
+        cost: null,
+        execution_time_ms: null,
         payout: null,
       });
 
@@ -191,7 +206,9 @@ export default function ProblemDetail() {
         description: `Stake of ${numStake} locked until deadline.`,
       });
 
-      setAnswer('');
+      setAlgorithm(`def solve(test_input):
+    # Your algorithm here
+    return 0`);
       setStake('');
     } catch (err: unknown) {
       const error = err as { code?: string };
@@ -232,7 +249,7 @@ export default function ProblemDetail() {
   }
 
   const isExpired = isPast(new Date(problem.deadline));
-  const showIntendedAnswer = isExpired || problem.status === 'evaluated';
+  const showTestInput = isExpired || problem.status === 'evaluated';
 
   return (
     <div className="min-h-screen bg-background">
@@ -280,6 +297,10 @@ export default function ProblemDetail() {
                 timeStyle: 'short',
               })}
             </span>
+            <span className="flex items-center gap-1">
+              <Timer className="h-4 w-4" />
+              {problem.time_penalty_per_ms}/ms penalty
+            </span>
           </div>
         </div>
 
@@ -291,27 +312,47 @@ export default function ProblemDetail() {
             <div className="prose prose-sm max-w-none dark:prose-invert">
               <LatexRenderer content={problem.description} />
             </div>
-            {problem.units && (
-              <p className="mt-4 text-sm text-muted-foreground">
-                <strong>Units:</strong> {problem.units}
+            <div className="mt-4 p-4 rounded-lg bg-muted">
+              <p className="text-sm text-muted-foreground mb-2">
+                <strong>Test Input Range:</strong> {problem.test_inputs_range.count} value(s) between{' '}
+                {problem.test_inputs_range.min} and {problem.test_inputs_range.max}
               </p>
-            )}
+              <p className="text-sm text-muted-foreground">
+                <strong>Time Penalty:</strong> {problem.time_penalty_per_ms} currency per millisecond of execution time
+              </p>
+            </div>
           </CardContent>
         </Card>
 
-        {showIntendedAnswer && (
+        <Card className="mb-8">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Code className="h-5 w-5" />
+              Cost Function
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="p-4 rounded-lg bg-muted overflow-x-auto text-sm font-mono">
+              {problem.cost_function}
+            </pre>
+            <p className="mt-2 text-sm text-muted-foreground">
+              Your solution&apos;s output will be passed to this cost function. Lower cost = better score.
+            </p>
+          </CardContent>
+        </Card>
+
+        {showTestInput && problem.test_input && (
           <Card className="mb-8 border-chart-1/30 bg-chart-1/5">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Trophy className="h-5 w-5 text-chart-1" />
-                Intended Answer
+                Test Input Used
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="font-mono text-2xl font-bold">
-                {problem.intended_answer}
-                {problem.units && <span className="text-muted-foreground ml-2 text-lg">{problem.units}</span>}
-              </p>
+              <pre className="font-mono text-lg font-bold">
+                {JSON.stringify(problem.test_input)}
+              </pre>
             </CardContent>
           </Card>
         )}
@@ -319,40 +360,42 @@ export default function ProblemDetail() {
         {!isExpired && profile && !userSolution && problem.status === 'open' && (
           <Card className="mb-8">
             <CardHeader>
-              <CardTitle>Submit Your Solution</CardTitle>
+              <CardTitle>Submit Your Algorithm</CardTitle>
             </CardHeader>
             <CardContent>
               <form onSubmit={handleSubmitSolution} className="space-y-4">
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <div className="space-y-2">
-                    <Label htmlFor="answer">Your Answer (numerical)</Label>
-                    <Input
-                      id="answer"
-                      type="number"
-                      step="any"
-                      placeholder="Enter your numerical answer"
-                      value={answer}
-                      onChange={(e) => setAnswer(e.target.value)}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="stake">Confidence Stake</Label>
-                    <Input
-                      id="stake"
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      placeholder="How much to stake"
-                      value={stake}
-                      onChange={(e) => setStake(e.target.value)}
-                    />
-                    <p className="text-xs text-muted-foreground">
-                      Available: {profile.currency.toFixed(2)}
-                    </p>
-                  </div>
+                <div className="space-y-2">
+                  <Label htmlFor="algorithm">Python Algorithm</Label>
+                  <Textarea
+                    id="algorithm"
+                    value={algorithm}
+                    onChange={(e) => setAlgorithm(e.target.value)}
+                    className="font-mono min-h-[200px]"
+                    placeholder="def solve(test_input):
+    # Your algorithm here
+    return result"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Define a <code>solve(test_input)</code> function that takes a list of numbers and returns your output.
+                  </p>
+                </div>
+                <div className="space-y-2 max-w-xs">
+                  <Label htmlFor="stake">Confidence Stake</Label>
+                  <Input
+                    id="stake"
+                    type="number"
+                    step="0.01"
+                    min="0.01"
+                    placeholder="How much to stake"
+                    value={stake}
+                    onChange={(e) => setStake(e.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Available: {profile.currency.toFixed(2)}
+                  </p>
                 </div>
                 <Button type="submit" disabled={submitting}>
-                  {submitting ? 'Submitting...' : 'Submit Solution'}
+                  {submitting ? 'Submitting...' : 'Submit Algorithm'}
                 </Button>
               </form>
             </CardContent>
@@ -365,9 +408,9 @@ export default function ProblemDetail() {
               <CardTitle>Your Submission</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="text-muted-foreground">
-                Answer: <span className="font-mono font-bold text-foreground">{userSolution.answer}</span>
-              </p>
+              <pre className="p-4 rounded-lg bg-muted overflow-x-auto text-sm font-mono mb-4 max-h-40 overflow-y-auto">
+                {userSolution.algorithm}
+              </pre>
               <p className="text-muted-foreground">
                 Stake: <span className="font-mono font-bold text-foreground">{userSolution.stake.toFixed(2)}</span>
               </p>
@@ -389,8 +432,8 @@ export default function ProblemDetail() {
                   <TableRow>
                     <TableHead>Rank</TableHead>
                     <TableHead>User</TableHead>
-                    <TableHead>Answer</TableHead>
-                    <TableHead>Error</TableHead>
+                    <TableHead>Cost</TableHead>
+                    <TableHead>Time (ms)</TableHead>
                     <TableHead>Stake</TableHead>
                     <TableHead>Payout</TableHead>
                   </TableRow>
@@ -404,9 +447,11 @@ export default function ProblemDetail() {
                           {sol.submitter.username}
                         </Link>
                       </TableCell>
-                      <TableCell className="font-mono">{sol.answer}</TableCell>
                       <TableCell className="font-mono">
-                        {sol.error !== null ? sol.error.toExponential(2) : '-'}
+                        {sol.cost !== null ? (sol.cost === Infinity ? '∞' : sol.cost.toFixed(4)) : '-'}
+                      </TableCell>
+                      <TableCell className="font-mono">
+                        {sol.execution_time_ms !== null ? sol.execution_time_ms.toFixed(0) : '-'}
                       </TableCell>
                       <TableCell className="font-mono">{sol.stake.toFixed(2)}</TableCell>
                       <TableCell className={`font-mono font-bold ${

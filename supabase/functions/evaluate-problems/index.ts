@@ -6,16 +6,161 @@ const corsHeaders = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 
+interface TestInputsRange {
+  min: number;
+  max: number;
+  count: number;
+}
+
+interface ExecutionResult {
+  output: unknown;
+  executionTimeMs: number;
+  error?: string;
+}
+
+// Execute Python algorithm via the execute-python function
+async function executePython(algorithm: string, testInput: unknown, supabaseUrl: string, serviceKey: string): Promise<ExecutionResult> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!LOVABLE_API_KEY) {
+    throw new Error("LOVABLE_API_KEY is not configured");
+  }
+
+  const systemPrompt = `You are a Python code executor. Execute the provided Python code with the given test input.
+
+CRITICAL RULES:
+1. The code defines a function called 'solve' that takes one argument
+2. Call solve(test_input) and return the result
+3. Return ONLY valid JSON: {"output": <result>, "execution_time_ms": <simulated_time>}
+4. If there's an error, return: {"error": "<error_message>", "execution_time_ms": 0}
+5. Simulate realistic execution time based on code complexity (1-500ms range)
+6. Do NOT include any explanation, just the JSON`;
+
+  const userPrompt = `Test Input: ${JSON.stringify(testInput)}
+
+Python Code:
+\`\`\`python
+${algorithm}
+\`\`\`
+
+Execute solve(${JSON.stringify(testInput)}) and return JSON result.`;
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0,
+    }),
+  });
+
+  if (!response.ok) {
+    return { output: null, executionTimeMs: 0, error: "AI execution failed" };
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+
+  try {
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    jsonStr = jsonStr.trim();
+    
+    const parsed = JSON.parse(jsonStr);
+    return {
+      output: parsed.output,
+      executionTimeMs: parsed.execution_time_ms || 50,
+      error: parsed.error,
+    };
+  } catch {
+    return { output: null, executionTimeMs: 0, error: "Failed to parse output" };
+  }
+}
+
+// Execute cost function to calculate cost
+async function calculateCost(costFunction: string, testInput: unknown, solutionOutput: unknown): Promise<{ cost: number; error?: string }> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!LOVABLE_API_KEY) {
+    throw new Error("LOVABLE_API_KEY is not configured");
+  }
+
+  const systemPrompt = `You are a Python code executor. Execute the cost function with the given inputs.
+
+CRITICAL RULES:
+1. The code defines a function called 'cost' that takes two arguments: (test_input, solution_output)
+2. Call cost(test_input, solution_output) and return the result
+3. Return ONLY valid JSON: {"cost": <number>}
+4. If there's an error, return: {"error": "<error_message>"}
+5. The cost should be a positive number (0 or greater)`;
+
+  const userPrompt = `Test Input: ${JSON.stringify(testInput)}
+Solution Output: ${JSON.stringify(solutionOutput)}
+
+Python Cost Function:
+\`\`\`python
+${costFunction}
+\`\`\`
+
+Execute cost(${JSON.stringify(testInput)}, ${JSON.stringify(solutionOutput)}) and return JSON.`;
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0,
+    }),
+  });
+
+  if (!response.ok) {
+    return { cost: Infinity, error: "Cost calculation failed" };
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+
+  try {
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    jsonStr = jsonStr.trim();
+    
+    const parsed = JSON.parse(jsonStr);
+    if (parsed.error) return { cost: Infinity, error: parsed.error };
+    return { cost: Number(parsed.cost) };
+  } catch {
+    return { cost: Infinity, error: "Failed to parse cost" };
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
   }
 
   try {
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
+    const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+    const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+    
+    const supabase = createClient(supabaseUrl, serviceKey);
 
     // Find problems past deadline that need evaluation
     const { data: problems } = await supabase
@@ -32,8 +177,25 @@ serve(async (req) => {
 
     for (const problem of problems) {
       const solutions = problem.solutions || [];
-      const intendedAnswer = Number(problem.intended_answer);
       const bounty = Number(problem.bounty);
+      const costFunction = problem.cost_function as string;
+      const testInputsRange = problem.test_inputs_range as TestInputsRange;
+      const timePenaltyPerMs = Number(problem.time_penalty_per_ms) || 0.001;
+
+      // Generate random test input from range
+      const testInput: number[] = [];
+      for (let i = 0; i < (testInputsRange.count || 1); i++) {
+        const val = testInputsRange.min + Math.random() * (testInputsRange.max - testInputsRange.min);
+        testInput.push(Number(val.toFixed(4)));
+      }
+
+      console.log(`Evaluating problem ${problem.id} with test input:`, testInput);
+
+      // Store the test input used
+      await supabase
+        .from("problems")
+        .update({ test_input: testInput })
+        .eq("id", problem.id);
 
       if (solutions.length === 0) {
         // Return bounty to creator
@@ -66,102 +228,134 @@ serve(async (req) => {
       const totalStake = solutions.reduce((sum: number, s: { stake: number }) => sum + Number(s.stake), 0);
       const pool = bounty + totalStake;
 
-      interface ScoredSolution {
+      interface EvaluatedSolution {
         id: string;
         submitter_id: string;
-        answer: number;
         stake: number;
-        error: number;
+        output: unknown;
+        cost: number;
+        executionTimeMs: number;
+        effectiveStake: number;
       }
 
-      // Calculate MSE for each solution
-      const scored: ScoredSolution[] = solutions.map((s: { id: string; submitter_id: string; answer: number; stake: number }) => {
-        const answer = Number(s.answer);
-        const stake = Number(s.stake);
-        const squaredError = Math.pow(answer - intendedAnswer, 2);
-        return { id: s.id, submitter_id: s.submitter_id, answer, stake, error: squaredError };
-      });
+      const evaluatedSolutions: EvaluatedSolution[] = [];
 
-      // Check if anyone has zero error
-      const zeroErrorSolutions = scored.filter((s: ScoredSolution) => s.error === 0);
-      
-      interface PayoutResult {
-        id: string;
-        submitter_id: string;
-        error: number;
-        stake: number;
-        payout: number;
+      // Execute each solution algorithm
+      for (const sol of solutions) {
+        const algorithm = sol.algorithm as string;
+        const stake = Number(sol.stake);
+
+        console.log(`Executing solution ${sol.id}...`);
+
+        // Execute the solution algorithm
+        const execResult = await executePython(algorithm, testInput, supabaseUrl, serviceKey);
+        
+        let cost = Infinity;
+        if (!execResult.error && execResult.output !== null) {
+          // Calculate cost using the problem's cost function
+          const costResult = await calculateCost(costFunction, testInput, execResult.output);
+          if (!costResult.error) {
+            cost = costResult.cost;
+          }
+        }
+
+        // Calculate effective stake after time penalty
+        const timePenalty = execResult.executionTimeMs * timePenaltyPerMs;
+        const effectiveStake = Math.max(0, stake - timePenalty);
+
+        evaluatedSolutions.push({
+          id: sol.id,
+          submitter_id: sol.submitter_id,
+          stake,
+          output: execResult.output,
+          cost,
+          executionTimeMs: execResult.executionTimeMs,
+          effectiveStake,
+        });
+
+        // Update solution record
+        await supabase
+          .from("solutions")
+          .update({
+            output: execResult.output,
+            cost,
+            execution_time_ms: execResult.executionTimeMs,
+          })
+          .eq("id", sol.id);
       }
+
+      // Calculate payouts: score = effectiveStake / cost
+      const zeroCostSolutions = evaluatedSolutions.filter(s => s.cost === 0);
       
-      let payoutResults: PayoutResult[];
-      
-      if (zeroErrorSolutions.length > 0) {
-        // Split pool among zero-error solutions based on stake
-        const zeroErrorTotalStake = zeroErrorSolutions.reduce((sum: number, s: ScoredSolution) => sum + s.stake, 0);
-        payoutResults = scored.map((s: ScoredSolution) => {
-          if (s.error === 0) {
-            const share = zeroErrorTotalStake > 0 ? s.stake / zeroErrorTotalStake : 1 / zeroErrorSolutions.length;
-            return { id: s.id, submitter_id: s.submitter_id, error: s.error, stake: s.stake, payout: pool * share };
+      let payouts: { id: string; submitter_id: string; stake: number; payout: number }[];
+
+      if (zeroCostSolutions.length > 0) {
+        // Split pool among zero-cost solutions based on effective stake
+        const totalEffectiveStake = zeroCostSolutions.reduce((sum, s) => sum + s.effectiveStake, 0);
+        payouts = evaluatedSolutions.map(s => {
+          if (s.cost === 0) {
+            const share = totalEffectiveStake > 0 ? s.effectiveStake / totalEffectiveStake : 1 / zeroCostSolutions.length;
+            return { id: s.id, submitter_id: s.submitter_id, stake: s.stake, payout: pool * share };
           } else {
-            return { id: s.id, submitter_id: s.submitter_id, error: s.error, stake: s.stake, payout: 0 };
+            return { id: s.id, submitter_id: s.submitter_id, stake: s.stake, payout: 0 };
           }
         });
       } else {
-        // Score = stake / MSE (higher stake, lower error = higher score)
-        const scoresWithInverse = scored.map((s: ScoredSolution) => ({
+        // Score = effectiveStake / cost
+        const scores = evaluatedSolutions.map(s => ({
           ...s,
-          score: s.stake / s.error
+          score: s.cost === Infinity || s.cost === 0 ? 0 : s.effectiveStake / s.cost,
         }));
-        const totalScore = scoresWithInverse.reduce((sum: number, s: { score: number }) => sum + s.score, 0);
-        payoutResults = scoresWithInverse.map((s) => ({
+        const totalScore = scores.reduce((sum, s) => sum + s.score, 0);
+        payouts = scores.map(s => ({
           id: s.id,
           submitter_id: s.submitter_id,
-          error: s.error,
           stake: s.stake,
-          payout: totalScore > 0 ? pool * (s.score / totalScore) : pool / scored.length
+          payout: totalScore > 0 ? pool * (s.score / totalScore) : pool / scores.length,
         }));
       }
 
       // Distribute payouts
-      for (const sol of payoutResults) {
-        const netPayout = sol.payout - sol.stake; // Net gain/loss
+      for (const payout of payouts) {
+        const netPayout = payout.payout - payout.stake;
 
-        // Update solution with error and payout
+        // Update solution with payout
         await supabase
           .from("solutions")
-          .update({ error: sol.error, payout: netPayout })
-          .eq("id", sol.id);
+          .update({ payout: netPayout })
+          .eq("id", payout.id);
 
         // Update user currency and reputation
         const { data: profile } = await supabase
           .from("profiles")
           .select("currency, reputation, total_profit")
-          .eq("id", sol.submitter_id)
+          .eq("id", payout.submitter_id)
           .single();
 
         if (profile) {
-          const reputationChange = netPayout * 0.1; // 10% of net payout affects reputation
+          const reputationChange = netPayout * 0.1;
           await supabase
             .from("profiles")
             .update({
-              currency: Number(profile.currency) + sol.payout,
+              currency: Number(profile.currency) + payout.payout,
               reputation: Number(profile.reputation) + reputationChange,
               total_profit: Number(profile.total_profit) + netPayout,
             })
-            .eq("id", sol.submitter_id);
+            .eq("id", payout.submitter_id);
 
           await supabase.from("transactions").insert({
-            user_id: sol.submitter_id,
+            user_id: payout.submitter_id,
             type: "payout",
-            amount: sol.payout,
+            amount: payout.payout,
             problem_id: problem.id,
-            solution_id: sol.id,
+            solution_id: payout.id,
             description: `Payout for problem: ${problem.title}`,
           });
         }
       }
 
       await supabase.from("problems").update({ status: "evaluated" }).eq("id", problem.id);
+      console.log(`Problem ${problem.id} evaluated successfully`);
     }
 
     return new Response(JSON.stringify({ evaluated: problems.length }), {

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -16,12 +16,15 @@ import { z } from 'zod';
 const problemSchema = z.object({
   title: z.string().min(5, 'Title must be at least 5 characters').max(200, 'Title too long'),
   description: z.string().min(20, 'Description must be at least 20 characters').max(10000, 'Description too long'),
-  intended_answer: z.number({ invalid_type_error: 'Must be a number' }),
+  cost_function: z.string().min(10, 'Cost function is required'),
   bounty: z.number().min(1, 'Bounty must be at least 1').max(10000, 'Bounty too high'),
   deadline: z.string().refine((val) => new Date(val) > new Date(), 'Deadline must be in the future'),
   tags: z.string().optional(),
   difficulty: z.string().optional(),
-  units: z.string().optional(),
+  test_min: z.number(),
+  test_max: z.number(),
+  test_count: z.number().min(1).max(100),
+  time_penalty_per_ms: z.number().min(0),
 });
 
 // Common timezones with their UTC offsets
@@ -65,12 +68,19 @@ export default function CreateProblem() {
   const [form, setForm] = useState({
     title: '',
     description: '',
-    intended_answer: '',
+    cost_function: `def cost(test_input, solution_output):
+    # Calculate how far the solution is from optimal
+    # Lower cost = better solution
+    expected = sum(test_input)  # Example: expected output
+    return abs(solution_output - expected)`,
     bounty: '',
     deadline: '',
     tags: '',
     difficulty: '',
-    units: '',
+    test_min: '0',
+    test_max: '100',
+    test_count: '1',
+    time_penalty_per_ms: '0.001',
   });
   const [timezone, setTimezone] = useState(getUserTimezone);
   const [loading, setLoading] = useState(false);
@@ -82,15 +92,11 @@ export default function CreateProblem() {
     if (!localDatetime) return '';
     const tzData = TIMEZONES.find(t => t.value === tz);
     const offsetHours = tzData?.offset ?? 0;
-    // datetime-local gives us "YYYY-MM-DDTHH:mm" - we need to interpret this as the selected timezone
-    // Then convert to UTC by subtracting the timezone offset
     const [datePart, timePart] = localDatetime.split('T');
     const [year, month, day] = datePart.split('-').map(Number);
     const [hours, minutes] = timePart.split(':').map(Number);
     
-    // Create a UTC date representing the selected timezone's time
     const utcMs = Date.UTC(year, month - 1, day, hours, minutes, 0, 0);
-    // Subtract the timezone offset to get actual UTC
     const actualUtcMs = utcMs - (offsetHours * 60 * 60 * 1000);
     return new Date(actualUtcMs).toISOString();
   };
@@ -109,18 +115,26 @@ export default function CreateProblem() {
       const data = {
         title: form.title.trim(),
         description: form.description.trim(),
-        intended_answer: parseFloat(form.intended_answer),
+        cost_function: form.cost_function.trim(),
         bounty: parseFloat(form.bounty),
         deadline: deadlineUTC,
         tags: form.tags,
         difficulty: form.difficulty,
-        units: form.units,
+        test_min: parseFloat(form.test_min),
+        test_max: parseFloat(form.test_max),
+        test_count: parseInt(form.test_count),
+        time_penalty_per_ms: parseFloat(form.time_penalty_per_ms),
       };
 
       problemSchema.parse(data);
 
       if (data.bounty > profile.currency) {
         setErrors({ bounty: `Insufficient funds. You have ${profile.currency.toFixed(2)} currency.` });
+        return;
+      }
+
+      if (!data.cost_function.includes('def cost')) {
+        setErrors({ cost_function: 'Cost function must define cost(test_input, solution_output)' });
         return;
       }
 
@@ -141,12 +155,17 @@ export default function CreateProblem() {
           creator_id: profile.id,
           title: data.title,
           description: data.description,
-          intended_answer: data.intended_answer,
+          cost_function: data.cost_function,
           bounty: data.bounty,
           deadline: data.deadline,
           tags: data.tags ? data.tags.split(',').map((t) => t.trim()).filter(Boolean) : [],
           difficulty: data.difficulty || null,
-          units: data.units || null,
+          test_inputs_range: {
+            min: data.test_min,
+            max: data.test_max,
+            count: data.test_count,
+          },
+          time_penalty_per_ms: data.time_penalty_per_ms,
         })
         .select()
         .single();
@@ -215,7 +234,7 @@ export default function CreateProblem() {
                 <Label htmlFor="title">Title</Label>
                 <Input
                   id="title"
-                  placeholder="What is the value of π²?"
+                  placeholder="Predict the stock price of AAPL"
                   value={form.title}
                   onChange={(e) => setForm({ ...form, title: e.target.value })}
                   className={errors.title ? 'border-destructive' : ''}
@@ -242,40 +261,82 @@ export default function CreateProblem() {
                 ) : (
                   <Textarea
                     id="description"
-                    placeholder="Find the exact value of $\int_0^1 x^2 dx$. Show your work is not required, just submit the numerical answer."
+                    placeholder="Describe the problem. What should the algorithm optimize? What is the cost function measuring?"
                     value={form.description}
                     onChange={(e) => setForm({ ...form, description: e.target.value })}
-                    className={`min-h-[150px] font-mono ${errors.description ? 'border-destructive' : ''}`}
+                    className={`min-h-[150px] ${errors.description ? 'border-destructive' : ''}`}
                   />
                 )}
                 {errors.description && <p className="text-sm text-destructive">{errors.description}</p>}
               </div>
+            </CardContent>
+          </Card>
 
-              <div className="grid gap-4 sm:grid-cols-2">
+          <Card>
+            <CardHeader>
+              <CardTitle>Cost Function (Python)</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="cost_function">
+                  Define cost(test_input, solution_output) → lower is better
+                </Label>
+                <Textarea
+                  id="cost_function"
+                  value={form.cost_function}
+                  onChange={(e) => setForm({ ...form, cost_function: e.target.value })}
+                  className={`min-h-[200px] font-mono ${errors.cost_function ? 'border-destructive' : ''}`}
+                />
+                <p className="text-xs text-muted-foreground">
+                  This function receives the test input and the output from a submitted algorithm.
+                  Return a number representing the cost (0 = perfect solution).
+                </p>
+                {errors.cost_function && <p className="text-sm text-destructive">{errors.cost_function}</p>}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Test Input Configuration</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-3">
                 <div className="space-y-2">
-                  <Label htmlFor="intended_answer">Intended Answer (numerical)</Label>
+                  <Label htmlFor="test_min">Min Value</Label>
                   <Input
-                    id="intended_answer"
+                    id="test_min"
                     type="number"
                     step="any"
-                    placeholder="9.8696044"
-                    value={form.intended_answer}
-                    onChange={(e) => setForm({ ...form, intended_answer: e.target.value })}
-                    className={errors.intended_answer ? 'border-destructive' : ''}
+                    value={form.test_min}
+                    onChange={(e) => setForm({ ...form, test_min: e.target.value })}
                   />
-                  {errors.intended_answer && <p className="text-sm text-destructive">{errors.intended_answer}</p>}
                 </div>
-
                 <div className="space-y-2">
-                  <Label htmlFor="units">Units (optional)</Label>
+                  <Label htmlFor="test_max">Max Value</Label>
                   <Input
-                    id="units"
-                    placeholder="meters, kg, dimensionless"
-                    value={form.units}
-                    onChange={(e) => setForm({ ...form, units: e.target.value })}
+                    id="test_max"
+                    type="number"
+                    step="any"
+                    value={form.test_max}
+                    onChange={(e) => setForm({ ...form, test_max: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="test_count">Number of Values</Label>
+                  <Input
+                    id="test_count"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={form.test_count}
+                    onChange={(e) => setForm({ ...form, test_count: e.target.value })}
                   />
                 </div>
               </div>
+              <p className="text-xs text-muted-foreground">
+                At evaluation time, a random list of {form.test_count || 1} number(s) between {form.test_min || 0} and {form.test_max || 100} will be generated.
+              </p>
             </CardContent>
           </Card>
 
@@ -316,20 +377,37 @@ export default function CreateProblem() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="timezone">Timezone</Label>
-                <Select value={timezone} onValueChange={setTimezone}>
-                  <SelectTrigger id="timezone">
-                    <SelectValue placeholder="Select timezone" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {TIMEZONES.map((tz) => (
-                      <SelectItem key={tz.value} value={tz.value}>
-                        {tz.label} (UTC{tz.offset >= 0 ? '+' : ''}{tz.offset})
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="timezone">Timezone</Label>
+                  <Select value={timezone} onValueChange={setTimezone}>
+                    <SelectTrigger id="timezone">
+                      <SelectValue placeholder="Select timezone" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {TIMEZONES.map((tz) => (
+                        <SelectItem key={tz.value} value={tz.value}>
+                          {tz.label} (UTC{tz.offset >= 0 ? '+' : ''}{tz.offset})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="time_penalty">Time Penalty (per ms)</Label>
+                  <Input
+                    id="time_penalty"
+                    type="number"
+                    step="0.0001"
+                    min="0"
+                    value={form.time_penalty_per_ms}
+                    onChange={(e) => setForm({ ...form, time_penalty_per_ms: e.target.value })}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Currency deducted per millisecond of execution time
+                  </p>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -344,7 +422,7 @@ export default function CreateProblem() {
                   <Label htmlFor="tags">Tags (comma-separated)</Label>
                   <Input
                     id="tags"
-                    placeholder="calculus, integration, physics"
+                    placeholder="optimization, machine-learning, finance"
                     value={form.tags}
                     onChange={(e) => setForm({ ...form, tags: e.target.value })}
                   />
