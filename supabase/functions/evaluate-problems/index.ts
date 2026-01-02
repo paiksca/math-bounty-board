@@ -18,8 +18,11 @@ interface ExecutionResult {
   error?: string;
 }
 
-// Execute Python algorithm via the execute-python function
-async function executePython(algorithm: string, testInput: unknown, supabaseUrl: string, serviceKey: string): Promise<ExecutionResult> {
+// Energy cost: 1 credit per millisecond of execution time
+const ENERGY_COST_PER_MS = 1;
+
+// Execute Python algorithm via AI simulation
+async function executePython(algorithm: string, testInput: unknown): Promise<ExecutionResult> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
   if (!LOVABLE_API_KEY) {
@@ -30,11 +33,14 @@ async function executePython(algorithm: string, testInput: unknown, supabaseUrl:
 
 CRITICAL RULES:
 1. The code defines a function called 'solve' that takes one argument
-2. Call solve(test_input) and return the result
-3. Return ONLY valid JSON: {"output": <result>, "execution_time_ms": <simulated_time>}
-4. If there's an error, return: {"error": "<error_message>", "execution_time_ms": 0}
-5. Simulate realistic execution time based on code complexity (1-500ms range)
-6. Do NOT include any explanation, just the JSON`;
+2. The code may use any Python standard library imports (math, numpy, pandas, requests, etc.)
+3. The code may make API calls to external services
+4. Call solve(test_input) and return the result
+5. Return ONLY valid JSON: {"output": <result>, "execution_time_ms": <simulated_time>}
+6. If there's an error, return: {"error": "<error_message>", "execution_time_ms": 0}
+7. Simulate realistic execution time based on code complexity and API calls (1-2000ms range)
+8. For API calls, simulate network latency (100-500ms per call)
+9. Do NOT include any explanation, just the JSON`;
 
   const userPrompt = `Test Input: ${JSON.stringify(testInput)}
 
@@ -86,8 +92,8 @@ Execute solve(${JSON.stringify(testInput)}) and return JSON result.`;
   }
 }
 
-// Execute cost function to calculate cost
-async function calculateCost(costFunction: string, testInput: unknown, solutionOutput: unknown): Promise<{ cost: number; error?: string }> {
+// Execute cost function to calculate cost (returns cost and execution time)
+async function calculateCost(costFunction: string, testInput: unknown, solutionOutput: unknown): Promise<{ cost: number; executionTimeMs: number; error?: string }> {
   const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
   
   if (!LOVABLE_API_KEY) {
@@ -98,10 +104,14 @@ async function calculateCost(costFunction: string, testInput: unknown, solutionO
 
 CRITICAL RULES:
 1. The code defines a function called 'cost' that takes two arguments: (test_input, solution_output)
-2. Call cost(test_input, solution_output) and return the result
-3. Return ONLY valid JSON: {"cost": <number>}
-4. If there's an error, return: {"error": "<error_message>"}
-5. The cost should be a positive number (0 or greater)`;
+2. The code may use any Python standard library imports (math, numpy, pandas, requests, etc.)
+3. The code may make API calls to external services (e.g., to fetch real-time data)
+4. Call cost(test_input, solution_output) and return the result
+5. Return ONLY valid JSON: {"cost": <number>, "execution_time_ms": <simulated_time>}
+6. If there's an error, return: {"error": "<error_message>", "execution_time_ms": 0}
+7. The cost should be a positive number (0 or greater)
+8. Simulate realistic execution time based on code complexity and API calls (1-2000ms range)
+9. For API calls, simulate network latency (100-500ms per call)`;
 
   const userPrompt = `Test Input: ${JSON.stringify(testInput)}
 Solution Output: ${JSON.stringify(solutionOutput)}
@@ -111,7 +121,7 @@ Python Cost Function:
 ${costFunction}
 \`\`\`
 
-Execute cost(${JSON.stringify(testInput)}, ${JSON.stringify(solutionOutput)}) and return JSON.`;
+Execute cost(${JSON.stringify(testInput)}, ${JSON.stringify(solutionOutput)}) and return JSON with cost and execution_time_ms.`;
 
   const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
     method: "POST",
@@ -130,7 +140,7 @@ Execute cost(${JSON.stringify(testInput)}, ${JSON.stringify(solutionOutput)}) an
   });
 
   if (!response.ok) {
-    return { cost: Infinity, error: "Cost calculation failed" };
+    return { cost: Infinity, executionTimeMs: 0, error: "Cost calculation failed" };
   }
 
   const data = await response.json();
@@ -144,10 +154,10 @@ Execute cost(${JSON.stringify(testInput)}, ${JSON.stringify(solutionOutput)}) an
     jsonStr = jsonStr.trim();
     
     const parsed = JSON.parse(jsonStr);
-    if (parsed.error) return { cost: Infinity, error: parsed.error };
-    return { cost: Number(parsed.cost) };
+    if (parsed.error) return { cost: Infinity, executionTimeMs: parsed.execution_time_ms || 0, error: parsed.error };
+    return { cost: Number(parsed.cost), executionTimeMs: parsed.execution_time_ms || 50 };
   } catch {
-    return { cost: Infinity, error: "Failed to parse cost" };
+    return { cost: Infinity, executionTimeMs: 0, error: "Failed to parse cost" };
   }
 }
 
@@ -248,20 +258,23 @@ serve(async (req) => {
         console.log(`Executing solution ${sol.id}...`);
 
         // Execute the solution algorithm
-        const execResult = await executePython(algorithm, testInput, supabaseUrl, serviceKey);
+        const execResult = await executePython(algorithm, testInput);
         
         let cost = Infinity;
+        let totalExecutionTimeMs = execResult.executionTimeMs;
+        
         if (!execResult.error && execResult.output !== null) {
           // Calculate cost using the problem's cost function
           const costResult = await calculateCost(costFunction, testInput, execResult.output);
+          totalExecutionTimeMs += costResult.executionTimeMs;
           if (!costResult.error) {
             cost = costResult.cost;
           }
         }
 
-        // Calculate effective stake after time penalty
-        const timePenalty = execResult.executionTimeMs * timePenaltyPerMs;
-        const effectiveStake = Math.max(0, stake - timePenalty);
+        // Energy cost = total execution time (solution + cost function) * 1 credit per ms
+        const energyCost = totalExecutionTimeMs * ENERGY_COST_PER_MS;
+        const effectiveStake = Math.max(0, stake - energyCost);
 
         evaluatedSolutions.push({
           id: sol.id,
@@ -269,7 +282,7 @@ serve(async (req) => {
           stake,
           output: execResult.output,
           cost,
-          executionTimeMs: execResult.executionTimeMs,
+          executionTimeMs: totalExecutionTimeMs,
           effectiveStake,
         });
 
