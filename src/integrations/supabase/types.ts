@@ -20,13 +20,17 @@ export type Database = {
           cost_function: string
           created_at: string
           creator_id: string
+          data_source_config: Json | null
           deadline: string
           description: string
           difficulty: string | null
+          evaluation_delay_hours: number | null
           id: string
+          problem_type: string | null
           status: string
           tags: string[] | null
           test_input: Json | null
+          test_input_generator: string | null
           test_inputs_range: Json
           time_penalty_per_ms: number
           title: string
@@ -37,13 +41,17 @@ export type Database = {
           cost_function?: string
           created_at?: string
           creator_id: string
+          data_source_config?: Json | null
           deadline: string
           description: string
           difficulty?: string | null
+          evaluation_delay_hours?: number | null
           id?: string
+          problem_type?: string | null
           status?: string
           tags?: string[] | null
           test_input?: Json | null
+          test_input_generator?: string | null
           test_inputs_range?: Json
           time_penalty_per_ms?: number
           title: string
@@ -54,13 +62,17 @@ export type Database = {
           cost_function?: string
           created_at?: string
           creator_id?: string
+          data_source_config?: Json | null
           deadline?: string
           description?: string
           difficulty?: string | null
+          evaluation_delay_hours?: number | null
           id?: string
+          problem_type?: string | null
           status?: string
           tags?: string[] | null
           test_input?: Json | null
+          test_input_generator?: string | null
           test_inputs_range?: Json
           time_penalty_per_ms?: number
           title?: string

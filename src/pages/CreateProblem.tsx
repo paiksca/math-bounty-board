@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
@@ -8,10 +8,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useToast } from '@/hooks/use-toast';
 import { z } from 'zod';
+import { PROBLEM_TEMPLATES, getTemplate, getDefaultTemplate } from '@/lib/problemTemplates';
 
 const problemSchema = z.object({
   title: z.string().min(5, 'Title must be at least 5 characters').max(200, 'Title too long'),
@@ -65,14 +66,16 @@ export default function CreateProblem() {
   const navigate = useNavigate();
   const { toast } = useToast();
   
+  const defaultTemplate = getDefaultTemplate();
+  const [selectedTemplate, setSelectedTemplate] = useState(defaultTemplate.id);
+  const [symbolInput, setSymbolInput] = useState('');
+  const [delayHours, setDelayHours] = useState('24');
+  
   const [form, setForm] = useState({
     title: '',
-    description: '',
-    cost_function: `def cost(test_input, solution_output):
-    # Calculate how far the solution is from optimal
-    # Lower cost = better solution
-    expected = sum(test_input)  # Example: expected output
-    return abs(solution_output - expected)`,
+    description: defaultTemplate.defaultDescription,
+    cost_function: defaultTemplate.defaultCostFunction,
+    test_input_generator: defaultTemplate.defaultTestInputGenerator || '',
     bounty: '',
     deadline: '',
     tags: '',
@@ -86,6 +89,22 @@ export default function CreateProblem() {
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [showPreview, setShowPreview] = useState(false);
+
+  // Update form when template changes
+  useEffect(() => {
+    const template = getTemplate(selectedTemplate);
+    if (template) {
+      setForm(prev => ({
+        ...prev,
+        description: template.defaultDescription,
+        cost_function: template.defaultCostFunction,
+        test_input_generator: template.defaultTestInputGenerator || '',
+      }));
+      if (template.defaultDelay) {
+        setDelayHours(String(template.defaultDelay));
+      }
+    }
+  }, [selectedTemplate]);
 
   // Convert datetime-local input (interpreted in selected timezone) to UTC ISO string
   const convertToUTC = (localDatetime: string, tz: string): string => {
@@ -101,6 +120,8 @@ export default function CreateProblem() {
     return new Date(actualUtcMs).toISOString();
   };
 
+  const getCurrentTemplate = () => getTemplate(selectedTemplate) || defaultTemplate;
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrors({});
@@ -109,6 +130,8 @@ export default function CreateProblem() {
       navigate('/auth');
       return;
     }
+
+    const template = getCurrentTemplate();
 
     try {
       const deadlineUTC = convertToUTC(form.deadline, timezone);
@@ -138,7 +161,34 @@ export default function CreateProblem() {
         return;
       }
 
+      // Validate template-specific inputs
+      if (template.hasSymbolInput && !symbolInput.trim()) {
+        setErrors({ symbol: `${template.symbolLabel} is required` });
+        return;
+      }
+      if (template.hasCityInput && !symbolInput.trim()) {
+        setErrors({ symbol: `${template.symbolLabel} is required` });
+        return;
+      }
+
       setLoading(true);
+
+      // Build test input generator with symbol/city substitution
+      let testInputGenerator = form.test_input_generator;
+      if (template.hasSymbolInput) {
+        testInputGenerator = testInputGenerator.replace(/\{\{SYMBOL\}\}/g, symbolInput.toUpperCase());
+      }
+      if (template.hasCityInput) {
+        testInputGenerator = testInputGenerator.replace(/\{\{CITY\}\}/g, symbolInput);
+      }
+
+      // Build data source config
+      let dataSourceConfig = null;
+      if (template.hasSymbolInput) {
+        dataSourceConfig = { symbol: symbolInput.toUpperCase() };
+      } else if (template.hasCityInput) {
+        dataSourceConfig = { city: symbolInput };
+      }
 
       // Lock bounty from user's currency
       const { error: updateError } = await supabase
@@ -166,6 +216,10 @@ export default function CreateProblem() {
             count: data.test_count,
           },
           time_penalty_per_ms: data.time_penalty_per_ms,
+          problem_type: selectedTemplate,
+          test_input_generator: testInputGenerator || null,
+          data_source_config: dataSourceConfig,
+          evaluation_delay_hours: template.hasDelayHours ? parseInt(delayHours) : 0,
         })
         .select()
         .single();
@@ -215,6 +269,10 @@ export default function CreateProblem() {
     return null;
   }
 
+  const template = getCurrentTemplate();
+  const showRandomInputConfig = selectedTemplate === 'optimization';
+  const showTestInputGenerator = selectedTemplate === 'custom';
+
   return (
     <div className="min-h-screen bg-background">
       <Header />
@@ -225,6 +283,74 @@ export default function CreateProblem() {
         </h1>
 
         <form onSubmit={handleSubmit} className="space-y-6">
+          {/* Template Selector */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Problem Type</CardTitle>
+              <CardDescription>Choose a template to get started quickly</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2">
+                {PROBLEM_TEMPLATES.map((t) => (
+                  <div
+                    key={t.id}
+                    onClick={() => setSelectedTemplate(t.id)}
+                    className={`cursor-pointer rounded-lg border-2 p-4 transition-colors ${
+                      selectedTemplate === t.id
+                        ? 'border-primary bg-primary/5'
+                        : 'border-border hover:border-primary/50'
+                    }`}
+                  >
+                    <h3 className="font-medium text-foreground">{t.name}</h3>
+                    <p className="text-sm text-muted-foreground mt-1">{t.description}</p>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Template-specific inputs */}
+          {(template.hasSymbolInput || template.hasCityInput) && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Data Configuration</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="symbol">{template.symbolLabel}</Label>
+                    <Input
+                      id="symbol"
+                      placeholder={template.symbolPlaceholder}
+                      value={symbolInput}
+                      onChange={(e) => setSymbolInput(e.target.value)}
+                      className={errors.symbol ? 'border-destructive' : ''}
+                    />
+                    {errors.symbol && <p className="text-sm text-destructive">{errors.symbol}</p>}
+                  </div>
+                  
+                  {template.hasDelayHours && (
+                    <div className="space-y-2">
+                      <Label htmlFor="delayHours">Prediction Window (hours)</Label>
+                      <Input
+                        id="delayHours"
+                        type="number"
+                        min="1"
+                        max="168"
+                        value={delayHours}
+                        onChange={(e) => setDelayHours(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Final evaluation happens {delayHours}h after deadline
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Problem Details */}
           <Card>
             <CardHeader>
               <CardTitle>Problem Details</CardTitle>
@@ -234,7 +360,7 @@ export default function CreateProblem() {
                 <Label htmlFor="title">Title</Label>
                 <Input
                   id="title"
-                  placeholder="Predict the stock price of AAPL"
+                  placeholder={template.hasSymbolInput ? `Predict ${symbolInput || template.symbolPlaceholder} price` : "Problem title"}
                   value={form.title}
                   onChange={(e) => setForm({ ...form, title: e.target.value })}
                   className={errors.title ? 'border-destructive' : ''}
@@ -272,6 +398,29 @@ export default function CreateProblem() {
             </CardContent>
           </Card>
 
+          {/* Test Input Generator (Custom only) */}
+          {showTestInputGenerator && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Test Input Generator (Python)</CardTitle>
+                <CardDescription>
+                  Define generate_test_input() to create test inputs at evaluation time
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <Textarea
+                  value={form.test_input_generator}
+                  onChange={(e) => setForm({ ...form, test_input_generator: e.target.value })}
+                  className="min-h-[150px] font-mono"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Available fetchers: fetch_stock("AAPL"), fetch_crypto("BTC"), fetch_weather("New York"), fetch_random(min, max, count)
+                </p>
+              </CardContent>
+            </Card>
+          )}
+
+          {/* Cost Function */}
           <Card>
             <CardHeader>
               <CardTitle>Cost Function (Python)</CardTitle>
@@ -296,50 +445,54 @@ export default function CreateProblem() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Test Input Configuration</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-4 sm:grid-cols-3">
-                <div className="space-y-2">
-                  <Label htmlFor="test_min">Min Value</Label>
-                  <Input
-                    id="test_min"
-                    type="number"
-                    step="any"
-                    value={form.test_min}
-                    onChange={(e) => setForm({ ...form, test_min: e.target.value })}
-                  />
+          {/* Random Input Configuration (Optimization only) */}
+          {showRandomInputConfig && (
+            <Card>
+              <CardHeader>
+                <CardTitle>Test Input Configuration</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 sm:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label htmlFor="test_min">Min Value</Label>
+                    <Input
+                      id="test_min"
+                      type="number"
+                      step="any"
+                      value={form.test_min}
+                      onChange={(e) => setForm({ ...form, test_min: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="test_max">Max Value</Label>
+                    <Input
+                      id="test_max"
+                      type="number"
+                      step="any"
+                      value={form.test_max}
+                      onChange={(e) => setForm({ ...form, test_max: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="test_count">Number of Values</Label>
+                    <Input
+                      id="test_count"
+                      type="number"
+                      min="1"
+                      max="100"
+                      value={form.test_count}
+                      onChange={(e) => setForm({ ...form, test_count: e.target.value })}
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="test_max">Max Value</Label>
-                  <Input
-                    id="test_max"
-                    type="number"
-                    step="any"
-                    value={form.test_max}
-                    onChange={(e) => setForm({ ...form, test_max: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="test_count">Number of Values</Label>
-                  <Input
-                    id="test_count"
-                    type="number"
-                    min="1"
-                    max="100"
-                    value={form.test_count}
-                    onChange={(e) => setForm({ ...form, test_count: e.target.value })}
-                  />
-                </div>
-              </div>
-              <p className="text-xs text-muted-foreground">
-                At evaluation time, a random list of {form.test_count || 1} number(s) between {form.test_min || 0} and {form.test_max || 100} will be generated.
-              </p>
-            </CardContent>
-          </Card>
+                <p className="text-xs text-muted-foreground">
+                  At evaluation time, a random list of {form.test_count || 1} number(s) between {form.test_min || 0} and {form.test_max || 100} will be generated.
+                </p>
+              </CardContent>
+            </Card>
+          )}
 
+          {/* Bounty & Deadline */}
           <Card>
             <CardHeader>
               <CardTitle>Bounty & Deadline</CardTitle>
@@ -412,6 +565,7 @@ export default function CreateProblem() {
             </CardContent>
           </Card>
 
+          {/* Metadata */}
           <Card>
             <CardHeader>
               <CardTitle>Metadata (optional)</CardTitle>
