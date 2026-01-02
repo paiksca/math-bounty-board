@@ -1,1 +1,7 @@
 project_id = "iwkaqcpsdumqxyeypzic"
+
+[functions.evaluate-problems]
+verify_jwt = false
+
+[functions.execute-python]
+verify_jwt = false

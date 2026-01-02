@@ -17,50 +17,53 @@ export type Database = {
       problems: {
         Row: {
           bounty: number
+          cost_function: string
           created_at: string
           creator_id: string
           deadline: string
           description: string
           difficulty: string | null
-          expected_scale: string | null
           id: string
-          intended_answer: number
           status: string
           tags: string[] | null
+          test_input: Json | null
+          test_inputs_range: Json
+          time_penalty_per_ms: number
           title: string
-          units: string | null
           updated_at: string
         }
         Insert: {
           bounty: number
+          cost_function?: string
           created_at?: string
           creator_id: string
           deadline: string
           description: string
           difficulty?: string | null
-          expected_scale?: string | null
           id?: string
-          intended_answer: number
           status?: string
           tags?: string[] | null
+          test_input?: Json | null
+          test_inputs_range?: Json
+          time_penalty_per_ms?: number
           title: string
-          units?: string | null
           updated_at?: string
         }
         Update: {
           bounty?: number
+          cost_function?: string
           created_at?: string
           creator_id?: string
           deadline?: string
           description?: string
           difficulty?: string | null
-          expected_scale?: string | null
           id?: string
-          intended_answer?: number
           status?: string
           tags?: string[] | null
+          test_input?: Json | null
+          test_inputs_range?: Json
+          time_penalty_per_ms?: number
           title?: string
-          units?: string | null
           updated_at?: string
         }
         Relationships: [
@@ -111,30 +114,36 @@ export type Database = {
       }
       solutions: {
         Row: {
-          answer: number
+          algorithm: string
+          cost: number | null
           created_at: string
-          error: number | null
+          execution_time_ms: number | null
           id: string
+          output: Json | null
           payout: number | null
           problem_id: string
           stake: number
           submitter_id: string
         }
         Insert: {
-          answer: number
+          algorithm?: string
+          cost?: number | null
           created_at?: string
-          error?: number | null
+          execution_time_ms?: number | null
           id?: string
+          output?: Json | null
           payout?: number | null
           problem_id: string
           stake: number
           submitter_id: string
         }
         Update: {
-          answer?: number
+          algorithm?: string
+          cost?: number | null
           created_at?: string
-          error?: number | null
+          execution_time_ms?: number | null
           id?: string
+          output?: Json | null
           payout?: number | null
           problem_id?: string
           stake?: number
