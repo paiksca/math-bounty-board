@@ -37,11 +37,14 @@ Execute the code with the given input and return ONLY the result in JSON format.
 CRITICAL RULES:
 1. Execute the provided Python code with the test_input variable available
 2. The code should define a function called 'solve' that takes one argument
-3. Call solve(test_input) and return the result
-4. Return ONLY valid JSON: {"output": <result>, "execution_time_ms": <simulated_time>}
-5. If there's an error, return: {"error": "<error_message>"}
-6. Simulate realistic execution time based on code complexity (1-1000ms range)
-7. Do NOT include any explanation, just the JSON result`;
+3. The code may use any Python standard library imports (math, numpy, pandas, requests, json, etc.)
+4. The code may make API calls to external services (simulate realistic responses)
+5. Call solve(test_input) and return the result
+6. Return ONLY valid JSON: {"output": <result>, "execution_time_ms": <simulated_time>}
+7. If there's an error, return: {"error": "<error_message>"}
+8. Simulate realistic execution time based on code complexity (1-2000ms range)
+9. For API calls, simulate network latency (100-500ms per call)
+10. Do NOT include any explanation, just the JSON result`;
 
     const userPrompt = `Test Input:
 ${JSON.stringify(testInput)}
