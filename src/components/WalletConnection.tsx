@@ -50,7 +50,7 @@ export function WalletConnection() {
             uniqueConnectors.map((connector) => (
               <DropdownMenuItem
                 key={connector.uid}
-                onClick={() => connect({ connector })}
+                onSelect={() => connect({ connector })}
                 className="cursor-pointer"
               >
                 {connector.name}
