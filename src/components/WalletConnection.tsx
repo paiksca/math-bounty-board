@@ -25,6 +25,12 @@ export function WalletConnection() {
   const isWrongNetwork = isConnected && chainId !== sepolia.id;
 
   if (!isConnected) {
+    // Filter to unique connectors by name to avoid duplicates
+    const uniqueConnectors = connectors.filter(
+      (connector, index, self) =>
+        index === self.findIndex((c) => c.name === connector.name)
+    );
+
     return (
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
@@ -36,14 +42,21 @@ export function WalletConnection() {
         <DropdownMenuContent align="end">
           <DropdownMenuLabel>Select Wallet</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {connectors.map((connector) => (
-            <DropdownMenuItem
-              key={connector.uid}
-              onClick={() => connect({ connector })}
-            >
-              {connector.name}
+          {uniqueConnectors.length === 0 ? (
+            <DropdownMenuItem disabled>
+              No wallets detected
             </DropdownMenuItem>
-          ))}
+          ) : (
+            uniqueConnectors.map((connector) => (
+              <DropdownMenuItem
+                key={connector.uid}
+                onClick={() => connect({ connector })}
+                className="cursor-pointer"
+              >
+                {connector.name}
+              </DropdownMenuItem>
+            ))
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
     );
