@@ -1,11 +1,17 @@
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
-import { Coins, Trophy, User, LogOut, Shield, PlusCircle } from 'lucide-react';
+import { Trophy, User, LogOut, Shield, PlusCircle } from 'lucide-react';
+import { WalletConnection } from '@/components/WalletConnection';
+import { useMNEEBalance } from '@/hooks/useMNEE';
+import { useAccount } from 'wagmi';
+import { MNEE_TO_CURRENCY_RATIO } from '@/lib/wagmi';
 
 export function Header() {
   const { user, profile, isAdmin, signOut } = useAuth();
   const location = useLocation();
+  const { isConnected } = useAccount();
+  const { balanceAsCurrency } = useMNEEBalance();
 
   const navItems = [
     { path: '/', label: 'Open Problems' },
@@ -55,6 +61,9 @@ export function Header() {
         </div>
 
         <div className="flex items-center gap-4">
+          {/* Wallet Connection - Always visible */}
+          <WalletConnection />
+
           {user && profile ? (
             <>
               <Link to="/create" className="hidden sm:block">
@@ -64,19 +73,23 @@ export function Header() {
                 </Button>
               </Link>
               
-              <div className="flex items-center gap-3 rounded-lg bg-muted/50 px-3 py-1.5">
-                <div className="flex items-center gap-1 text-sm">
-                  <Coins className="h-4 w-4 text-chart-1" />
-                  <span className="font-mono font-medium">{profile.currency.toFixed(2)}</span>
+              {/* Show MNEE-based balance when wallet connected */}
+              {isConnected && (
+                <div className="flex items-center gap-3 rounded-lg bg-muted/50 px-3 py-1.5">
+                  <div className="flex items-center gap-1 text-sm">
+                    <span className="text-xs text-muted-foreground">Balance:</span>
+                    <span className="font-mono font-medium">{balanceAsCurrency.toFixed(2)}</span>
+                    <span className="text-xs text-muted-foreground">units</span>
+                  </div>
+                  <div className="h-4 w-px bg-border" />
+                  <div className="flex items-center gap-1 text-sm">
+                    <Trophy className="h-4 w-4 text-chart-2" />
+                    <span className={`font-mono font-medium ${profile.reputation >= 0 ? 'text-chart-1' : 'text-destructive'}`}>
+                      {profile.reputation >= 0 ? '+' : ''}{profile.reputation.toFixed(1)}
+                    </span>
+                  </div>
                 </div>
-                <div className="h-4 w-px bg-border" />
-                <div className="flex items-center gap-1 text-sm">
-                  <Trophy className="h-4 w-4 text-chart-2" />
-                  <span className={`font-mono font-medium ${profile.reputation >= 0 ? 'text-chart-1' : 'text-destructive'}`}>
-                    {profile.reputation >= 0 ? '+' : ''}{profile.reputation.toFixed(1)}
-                  </span>
-                </div>
-              </div>
+              )}
 
               <Link
                 to={`/profile/${profile.id}`}

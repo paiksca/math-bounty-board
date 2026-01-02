@@ -8,13 +8,21 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useToast } from '@/hooks/use-toast';
-import { Clock, Coins, User, Trophy, AlertTriangle, Code, Timer } from 'lucide-react';
+import { Clock, Coins, User, Trophy, AlertTriangle, Code, Timer, Wallet, ExternalLink } from 'lucide-react';
 import { isPast } from 'date-fns';
+import { useAccount } from 'wagmi';
+import { useMNEEBalance, useMNEETransfer } from '@/hooks/useMNEE';
+import { TransactionStatus, TransactionHash } from '@/components/TransactionStatus';
+import { WalletConnection } from '@/components/WalletConnection';
+import { currencyToMnee, formatMnee, MNEE_TO_CURRENCY_RATIO, getEtherscanAddressLink } from '@/lib/wagmi';
+
+// Platform treasury address (for demo - in production this would be a multi-sig or escrow contract)
+const PLATFORM_TREASURY_ADDRESS = '0x742d35Cc6634C0532925a3b844Bc9e7595f1d888' as const;
 
 interface TestInputsRange {
   min: number;
@@ -73,11 +81,23 @@ export default function ProblemDetail() {
     return 0`);
   const [stake, setStake] = useState('');
 
+  // Wallet state
+  const { address, isConnected } = useAccount();
+  const { balance, balanceAsCurrency, refetch: refetchBalance } = useMNEEBalance();
+  const { transfer, hash: txHash, isPending, isConfirming, isSuccess, error: txError } = useMNEETransfer();
+
   useEffect(() => {
     if (id) {
       fetchProblem();
     }
   }, [id]);
+
+  // Handle successful MNEE transaction
+  useEffect(() => {
+    if (isSuccess && txHash && problem && profile) {
+      handlePostTransactionSubmit();
+    }
+  }, [isSuccess, txHash]);
 
   const fetchProblem = async () => {
     const { data: problemData, error: problemError } = await supabase
@@ -131,39 +151,12 @@ export default function ProblemDetail() {
     setLoading(false);
   };
 
-  const handleSubmitSolution = async (e: React.FormEvent) => {
-    e.preventDefault();
-    
-    if (!profile || !problem) return;
+  const handlePostTransactionSubmit = async () => {
+    if (!profile || !problem || !txHash) return;
     
     const numStake = parseFloat(stake);
     
-    if (!algorithm.includes('def solve')) {
-      toast({ title: 'Invalid algorithm', description: 'Your code must define a solve(test_input) function.', variant: 'destructive' });
-      return;
-    }
-    
-    if (isNaN(numStake) || numStake <= 0) {
-      toast({ title: 'Invalid stake', description: 'Stake must be a positive number.', variant: 'destructive' });
-      return;
-    }
-    
-    if (numStake > profile.currency) {
-      toast({ title: 'Insufficient funds', description: `You only have ${profile.currency.toFixed(2)} currency.`, variant: 'destructive' });
-      return;
-    }
-
-    setSubmitting(true);
-
     try {
-      // Lock stake from user's currency
-      const { error: updateError } = await supabase
-        .from('profiles')
-        .update({ currency: profile.currency - numStake })
-        .eq('id', profile.id);
-
-      if (updateError) throw updateError;
-
       // Create solution
       const { data: solution, error: solutionError } = await supabase
         .from('solutions')
@@ -181,17 +174,21 @@ export default function ProblemDetail() {
 
       if (solutionError) throw solutionError;
 
-      // Log transaction
-      await supabase.from('transactions').insert({
-        user_id: profile.id,
-        type: 'stake_lock',
-        amount: -numStake,
-        problem_id: problem.id,
-        solution_id: solution.id,
-        description: `Stake locked for problem: ${problem.title}`,
+      // Record transaction with tx_hash
+      await supabase.functions.invoke('mnee-payments', {
+        body: {
+          action: 'record_stake_deposit',
+          solution_id: solution.id,
+          problem_id: problem.id,
+          tx_hash: txHash,
+          amount_currency: numStake,
+          from_address: address,
+          user_id: profile.id,
+        }
       });
 
       await refreshProfile();
+      refetchBalance();
       
       setUserSolution({
         ...solution,
@@ -202,24 +199,58 @@ export default function ProblemDetail() {
       });
 
       toast({
-        title: 'Solution submitted!',
-        description: `Stake of ${numStake} locked until deadline.`,
+        title: 'Solution submitted with MNEE stake!',
+        description: `Stake of ${numStake} units locked on-chain.`,
       });
 
       setAlgorithm(`def solve(test_input):
     # Your algorithm here
     return 0`);
       setStake('');
-    } catch (err: unknown) {
-      const error = err as { code?: string };
-      if (error.code === '23505') {
-        toast({ title: 'Already submitted', description: 'You have already submitted a solution.', variant: 'destructive' });
-      } else {
-        toast({ title: 'Error', description: 'Failed to submit solution.', variant: 'destructive' });
-      }
-    } finally {
+      setSubmitting(false);
+    } catch (err) {
+      console.error('Error submitting solution:', err);
+      toast({ title: 'Error', description: 'Transaction succeeded but failed to record solution.', variant: 'destructive' });
       setSubmitting(false);
     }
+  };
+
+  const handleSubmitSolution = async (e: React.FormEvent) => {
+    e.preventDefault();
+    
+    if (!profile || !problem) return;
+    
+    const numStake = parseFloat(stake);
+    
+    if (!algorithm.includes('def solve')) {
+      toast({ title: 'Invalid algorithm', description: 'Your code must define a solve(test_input) function.', variant: 'destructive' });
+      return;
+    }
+    
+    if (isNaN(numStake) || numStake <= 0) {
+      toast({ title: 'Invalid stake', description: 'Stake must be a positive number.', variant: 'destructive' });
+      return;
+    }
+
+    if (!isConnected) {
+      toast({ title: 'Wallet not connected', description: 'Please connect your wallet to stake MNEE.', variant: 'destructive' });
+      return;
+    }
+
+    const mneeAmount = currencyToMnee(numStake);
+    if (balance < mneeAmount) {
+      toast({ 
+        title: 'Insufficient MNEE', 
+        description: `You need ${formatMnee(mneeAmount)} MNEE but only have ${formatMnee(balance)}.`, 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    setSubmitting(true);
+
+    // Initiate MNEE transfer to platform treasury
+    transfer(PLATFORM_TREASURY_ADDRESS, numStake);
   };
 
   if (loading) {
@@ -250,6 +281,9 @@ export default function ProblemDetail() {
 
   const isExpired = isPast(new Date(problem.deadline));
   const showTestInput = isExpired || problem.status === 'evaluated';
+  const numStake = parseFloat(stake) || 0;
+  const mneeStakeAmount = currencyToMnee(numStake);
+  const hasInsufficientBalance = balance < mneeStakeAmount;
 
   return (
     <div className="min-h-screen bg-background">
@@ -288,7 +322,7 @@ export default function ProblemDetail() {
             </span>
             <span className="flex items-center gap-1">
               <Coins className="h-4 w-4 text-chart-1" />
-              {problem.bounty.toFixed(2)} bounty
+              {problem.bounty.toFixed(2)} bounty ({formatMnee(currencyToMnee(problem.bounty))} MNEE)
             </span>
             <span className={`flex items-center gap-1 ${isExpired ? 'text-destructive' : ''}`}>
               <Clock className="h-4 w-4" />
@@ -360,44 +394,87 @@ export default function ProblemDetail() {
         {!isExpired && profile && !userSolution && problem.status === 'open' && (
           <Card className="mb-8">
             <CardHeader>
-              <CardTitle>Submit Your Algorithm</CardTitle>
+              <CardTitle className="flex items-center gap-2">
+                <Wallet className="h-5 w-5" />
+                Submit Your Algorithm with MNEE Stake
+              </CardTitle>
+              <CardDescription>
+                Stake MNEE tokens on your solution. Higher stake = higher potential payout!
+              </CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleSubmitSolution} className="space-y-4">
-                <div className="space-y-2">
-                  <Label htmlFor="algorithm">Python Algorithm</Label>
-                  <Textarea
-                    id="algorithm"
-                    value={algorithm}
-                    onChange={(e) => setAlgorithm(e.target.value)}
-                    className="font-mono min-h-[200px]"
-                    placeholder="def solve(test_input):
+              {!isConnected ? (
+                <div className="p-6 text-center rounded-lg bg-muted/50">
+                  <Wallet className="h-12 w-12 mx-auto mb-4 text-muted-foreground" />
+                  <p className="text-muted-foreground mb-4">Connect your wallet to stake MNEE on your solution</p>
+                  <WalletConnection />
+                </div>
+              ) : (
+                <form onSubmit={handleSubmitSolution} className="space-y-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="algorithm">Python Algorithm</Label>
+                    <Textarea
+                      id="algorithm"
+                      value={algorithm}
+                      onChange={(e) => setAlgorithm(e.target.value)}
+                      className="font-mono min-h-[200px]"
+                      placeholder="def solve(test_input):
     # Your algorithm here
     return result"
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Define a <code>solve(test_input)</code> function that takes a list of numbers and returns your output.
+                    </p>
+                  </div>
+                  <div className="space-y-2 max-w-xs">
+                    <Label htmlFor="stake">MNEE Stake (in currency units)</Label>
+                    <Input
+                      id="stake"
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      placeholder="Amount to stake"
+                      value={stake}
+                      onChange={(e) => setStake(e.target.value)}
+                      className={hasInsufficientBalance && numStake > 0 ? 'border-destructive' : ''}
+                    />
+                    <div className="flex justify-between items-center text-xs text-muted-foreground">
+                      <span>
+                        Your balance: {balanceAsCurrency.toFixed(2)} units ({formatMnee(balance)} MNEE)
+                      </span>
+                      {numStake > 0 && (
+                        <span className={hasInsufficientBalance ? 'text-destructive' : ''}>
+                          = {formatMnee(mneeStakeAmount)} MNEE
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {hasInsufficientBalance && numStake > 0 && (
+                    <div className="flex items-center gap-2 text-destructive text-sm">
+                      <AlertTriangle className="h-4 w-4" />
+                      <span>Insufficient MNEE balance</span>
+                    </div>
+                  )}
+
+                  <Button 
+                    type="submit" 
+                    disabled={submitting || isPending || isConfirming || hasInsufficientBalance}
+                    className="gap-2"
+                  >
+                    <Wallet className="h-4 w-4" />
+                    {isPending ? 'Confirm in Wallet...' : isConfirming ? 'Processing...' : 'Stake MNEE & Submit'}
+                  </Button>
+
+                  <TransactionStatus
+                    hash={txHash}
+                    isPending={isPending}
+                    isConfirming={isConfirming}
+                    isSuccess={isSuccess}
+                    error={txError}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    Define a <code>solve(test_input)</code> function that takes a list of numbers and returns your output.
-                  </p>
-                </div>
-                <div className="space-y-2 max-w-xs">
-                  <Label htmlFor="stake">Confidence Stake</Label>
-                  <Input
-                    id="stake"
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    placeholder="How much to stake"
-                    value={stake}
-                    onChange={(e) => setStake(e.target.value)}
-                  />
-                  <p className="text-xs text-muted-foreground">
-                    Available: {profile.currency.toFixed(2)}
-                  </p>
-                </div>
-                <Button type="submit" disabled={submitting}>
-                  {submitting ? 'Submitting...' : 'Submit Algorithm'}
-                </Button>
-              </form>
+                </form>
+              )}
             </CardContent>
           </Card>
         )}
@@ -412,7 +489,9 @@ export default function ProblemDetail() {
                 {userSolution.algorithm}
               </pre>
               <p className="text-muted-foreground">
-                Stake: <span className="font-mono font-bold text-foreground">{userSolution.stake.toFixed(2)}</span>
+                Stake: <span className="font-mono font-bold text-foreground">
+                  {userSolution.stake.toFixed(2)} units ({formatMnee(currencyToMnee(userSolution.stake))} MNEE)
+                </span>
               </p>
               <p className="text-sm text-muted-foreground mt-2">
                 Results will be visible after the deadline.
