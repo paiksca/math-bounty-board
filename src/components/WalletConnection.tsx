@@ -13,16 +13,58 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import { useToast } from '@/hooks/use-toast';
+import { useEffect } from 'react';
+
+function getErrorMessage(err: unknown): string {
+  if (!err) return 'Unknown error';
+  if (typeof err === 'string') return err;
+  if (err instanceof Error) return err.message;
+  const anyErr = err as any;
+  return (
+    anyErr?.shortMessage ||
+    anyErr?.details ||
+    anyErr?.message ||
+    'Wallet connection failed'
+  );
+}
 
 export function WalletConnection() {
   const { address, isConnected } = useAccount();
-  const { connect, connectors, isPending } = useConnect();
+  const {
+    connect,
+    connectAsync,
+    connectors,
+    isPending,
+    error: connectError,
+  } = useConnect();
   const { disconnect } = useDisconnect();
   const chainId = useChainId();
   const { switchChain } = useSwitchChain();
+  const { toast } = useToast();
   const { balanceFormatted, balanceAsCurrency, isLoading: balanceLoading } = useMNEEBalance();
 
   const isWrongNetwork = isConnected && chainId !== sepolia.id;
+
+  const isEmbeddedPreview = (() => {
+    try {
+      return window.self !== window.top;
+    } catch {
+      return true;
+    }
+  })();
+
+  useEffect(() => {
+    if (!connectError) return;
+
+    toast({
+      title: 'Wallet connection failed',
+      description: getErrorMessage(connectError),
+      variant: 'destructive',
+    });
+
+    console.error('Wallet connect error:', connectError);
+  }, [connectError, toast]);
 
   if (!isConnected) {
     // Filter to unique connectors by name to avoid duplicates
@@ -30,6 +72,8 @@ export function WalletConnection() {
       (connector, index, self) =>
         index === self.findIndex((c) => c.name === connector.name)
     );
+
+    const externalHref = typeof window !== 'undefined' ? window.location.href : '/';
 
     return (
       <DropdownMenu>
@@ -42,20 +86,52 @@ export function WalletConnection() {
         <DropdownMenuContent align="end">
           <DropdownMenuLabel>Select Wallet</DropdownMenuLabel>
           <DropdownMenuSeparator />
-          {uniqueConnectors.length === 0 ? (
-            <DropdownMenuItem disabled>
-              No wallets detected
-            </DropdownMenuItem>
-          ) : (
-            uniqueConnectors.map((connector) => (
-              <DropdownMenuItem
-                key={connector.uid}
-                onSelect={() => connect({ connector })}
-                className="cursor-pointer"
-              >
-                {connector.name}
+
+          {isEmbeddedPreview && (
+            <>
+              <DropdownMenuItem asChild className="cursor-pointer">
+                <a href={externalHref} target="_blank" rel="noopener noreferrer">
+                  Open in new tab (recommended)
+                </a>
               </DropdownMenuItem>
-            ))
+              <DropdownMenuSeparator />
+            </>
+          )}
+
+          {uniqueConnectors.length === 0 ? (
+            <DropdownMenuItem disabled>No wallets detected</DropdownMenuItem>
+          ) : (
+            uniqueConnectors.map((connector) => {
+              const isReady = (connector as any)?.ready ?? true;
+
+              return (
+                <DropdownMenuItem
+                  key={connector.uid}
+                  disabled={!isReady}
+                  onSelect={async (e) => {
+                    e.preventDefault();
+                    try {
+                      toast({
+                        title: 'Opening wallet…',
+                        description: `Connecting with ${connector.name}.`,
+                      });
+                      await connectAsync({ connector });
+                    } catch (err) {
+                      toast({
+                        title: 'Wallet connection failed',
+                        description: getErrorMessage(err),
+                        variant: 'destructive',
+                      });
+                      console.error('Wallet connect error (select):', err);
+                    }
+                  }}
+                  className="cursor-pointer"
+                >
+                  {connector.name}
+                  {!isReady ? ' (not detected)' : ''}
+                </DropdownMenuItem>
+              );
+            })
           )}
         </DropdownMenuContent>
       </DropdownMenu>
