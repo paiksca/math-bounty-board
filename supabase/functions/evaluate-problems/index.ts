@@ -12,6 +12,11 @@ interface TestInputsRange {
   count: number;
 }
 
+interface DataSourceConfig {
+  symbol?: string;
+  city?: string;
+}
+
 interface ExecutionResult {
   output: unknown;
   executionTimeMs: number;
@@ -20,6 +25,116 @@ interface ExecutionResult {
 
 // Energy cost: 1 credit per millisecond of execution time
 const ENERGY_COST_PER_MS = 1;
+
+// Fetch external data using the fetch-external-data function
+async function fetchExternalData(supabaseUrl: string, type: string, config: DataSourceConfig): Promise<unknown> {
+  const response = await fetch(`${supabaseUrl}/functions/v1/fetch-external-data`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      type,
+      symbol: config.symbol,
+      city: config.city,
+    }),
+  });
+  
+  if (!response.ok) {
+    throw new Error(`Failed to fetch ${type} data`);
+  }
+  
+  const result = await response.json();
+  return result.data;
+}
+
+// Execute test input generator via AI
+async function executeTestInputGenerator(generator: string, problemType: string, dataSourceConfig: DataSourceConfig | null, supabaseUrl: string): Promise<{ testInput: unknown; executionTimeMs: number; error?: string }> {
+  const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+  
+  if (!LOVABLE_API_KEY) {
+    throw new Error("LOVABLE_API_KEY is not configured");
+  }
+
+  // For templated problems, use built-in fetchers
+  if (problemType === "stock_prediction" && dataSourceConfig?.symbol) {
+    const data = await fetchExternalData(supabaseUrl, "stock", dataSourceConfig);
+    return { testInput: data, executionTimeMs: 50 };
+  }
+  
+  if (problemType === "crypto_prediction" && dataSourceConfig?.symbol) {
+    const data = await fetchExternalData(supabaseUrl, "crypto", dataSourceConfig);
+    return { testInput: data, executionTimeMs: 50 };
+  }
+  
+  if (problemType === "weather_forecast" && dataSourceConfig?.city) {
+    const data = await fetchExternalData(supabaseUrl, "weather", dataSourceConfig);
+    return { testInput: data, executionTimeMs: 50 };
+  }
+
+  // For custom generators, execute the Python code
+  if (!generator) {
+    return { testInput: null, executionTimeMs: 0, error: "No test input generator provided" };
+  }
+
+  const systemPrompt = `You are a Python code executor. Execute the test input generator function.
+
+CRITICAL RULES:
+1. The code defines a function called 'generate_test_input' that takes no arguments
+2. The following built-in functions are available:
+   - fetch_stock(symbol) -> {"symbol": "AAPL", "price": 185.50, "timestamp": "..."}
+   - fetch_crypto(symbol) -> {"symbol": "BTC", "price": 95000, "timestamp": "..."}
+   - fetch_weather(city) -> {"city": "NYC", "temp_f": 45, "conditions": "cloudy", ...}
+   - fetch_random(min, max, count) -> [list of random numbers] or single number if count=1
+3. Call generate_test_input() and return the result
+4. Return ONLY valid JSON: {"output": <result>, "execution_time_ms": <simulated_time>}
+5. If there's an error, return: {"error": "<error_message>", "execution_time_ms": 0}
+6. Simulate realistic execution time (50-500ms for API calls)`;
+
+  const userPrompt = `Execute this test input generator and return JSON result:
+
+\`\`\`python
+${generator}
+\`\`\``;
+
+  const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${LOVABLE_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: "google/gemini-2.5-flash",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt },
+      ],
+      temperature: 0,
+    }),
+  });
+
+  if (!response.ok) {
+    return { testInput: null, executionTimeMs: 0, error: "AI execution failed" };
+  }
+
+  const data = await response.json();
+  const content = data.choices?.[0]?.message?.content || "";
+
+  try {
+    let jsonStr = content.trim();
+    if (jsonStr.startsWith("```json")) jsonStr = jsonStr.slice(7);
+    else if (jsonStr.startsWith("```")) jsonStr = jsonStr.slice(3);
+    if (jsonStr.endsWith("```")) jsonStr = jsonStr.slice(0, -3);
+    jsonStr = jsonStr.trim();
+    
+    const parsed = JSON.parse(jsonStr);
+    return {
+      testInput: parsed.output,
+      executionTimeMs: parsed.execution_time_ms || 50,
+      error: parsed.error,
+    };
+  } catch {
+    return { testInput: null, executionTimeMs: 0, error: "Failed to parse generator output" };
+  }
+}
 
 // Execute Python algorithm via AI simulation
 async function executePython(algorithm: string, testInput: unknown): Promise<ExecutionResult> {
@@ -161,6 +276,16 @@ Execute cost(${JSON.stringify(testInput)}, ${JSON.stringify(solutionOutput)}) an
   }
 }
 
+// Generate random test input (legacy behavior)
+function generateRandomTestInput(testInputsRange: TestInputsRange): number[] {
+  const testInput: number[] = [];
+  for (let i = 0; i < (testInputsRange.count || 1); i++) {
+    const val = testInputsRange.min + Math.random() * (testInputsRange.max - testInputsRange.min);
+    testInput.push(Number(val.toFixed(4)));
+  }
+  return testInput;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -172,12 +297,15 @@ serve(async (req) => {
     
     const supabase = createClient(supabaseUrl, serviceKey);
 
+    const now = new Date();
+    
     // Find problems past deadline that need evaluation
+    // For problems with evaluation_delay_hours > 0, check if enough time has passed
     const { data: problems } = await supabase
       .from("problems")
       .select("*, solutions(*)")
       .eq("status", "open")
-      .lt("deadline", new Date().toISOString());
+      .lt("deadline", now.toISOString());
 
     if (!problems || problems.length === 0) {
       return new Response(JSON.stringify({ message: "No problems to evaluate" }), {
@@ -185,21 +313,61 @@ serve(async (req) => {
       });
     }
 
-    for (const problem of problems) {
+    // Filter problems ready for evaluation
+    const readyProblems = problems.filter(problem => {
+      const deadline = new Date(problem.deadline);
+      const delayHours = Number(problem.evaluation_delay_hours) || 0;
+      const evaluationTime = new Date(deadline.getTime() + delayHours * 60 * 60 * 1000);
+      return now >= evaluationTime;
+    });
+
+    if (readyProblems.length === 0) {
+      return new Response(JSON.stringify({ message: "No problems ready for evaluation yet" }), {
+        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      });
+    }
+
+    for (const problem of readyProblems) {
       const solutions = problem.solutions || [];
       const bounty = Number(problem.bounty);
       const costFunction = problem.cost_function as string;
+      const problemType = (problem.problem_type as string) || "optimization";
+      const testInputGenerator = problem.test_input_generator as string | null;
+      const dataSourceConfig = problem.data_source_config as DataSourceConfig | null;
       const testInputsRange = problem.test_inputs_range as TestInputsRange;
       const timePenaltyPerMs = Number(problem.time_penalty_per_ms) || 0.001;
 
-      // Generate random test input from range
-      const testInput: number[] = [];
-      for (let i = 0; i < (testInputsRange.count || 1); i++) {
-        const val = testInputsRange.min + Math.random() * (testInputsRange.max - testInputsRange.min);
-        testInput.push(Number(val.toFixed(4)));
+      console.log(`Evaluating problem ${problem.id} (type: ${problemType})`);
+
+      // Generate test input based on problem type
+      let testInput: unknown;
+      let generatorExecutionTimeMs = 0;
+
+      if (problemType === "optimization") {
+        // Use random test input for optimization problems
+        testInput = generateRandomTestInput(testInputsRange);
+      } else if (testInputGenerator || problemType !== "optimization") {
+        // Use custom generator or built-in fetcher
+        const genResult = await executeTestInputGenerator(
+          testInputGenerator || "",
+          problemType,
+          dataSourceConfig,
+          supabaseUrl
+        );
+        
+        if (genResult.error) {
+          console.error(`Test input generation failed for problem ${problem.id}:`, genResult.error);
+          // Fall back to random input
+          testInput = generateRandomTestInput(testInputsRange);
+        } else {
+          testInput = genResult.testInput;
+          generatorExecutionTimeMs = genResult.executionTimeMs;
+        }
+      } else {
+        testInput = generateRandomTestInput(testInputsRange);
       }
 
-      console.log(`Evaluating problem ${problem.id} with test input:`, testInput);
+      console.log(`Generated test input for problem ${problem.id}:`, testInput);
 
       // Store the test input used
       await supabase
@@ -261,7 +429,7 @@ serve(async (req) => {
         const execResult = await executePython(algorithm, testInput);
         
         let cost = Infinity;
-        let totalExecutionTimeMs = execResult.executionTimeMs;
+        let totalExecutionTimeMs = generatorExecutionTimeMs + execResult.executionTimeMs;
         
         if (!execResult.error && execResult.output !== null) {
           // Calculate cost using the problem's cost function
@@ -272,7 +440,7 @@ serve(async (req) => {
           }
         }
 
-        // Energy cost = total execution time (solution + cost function) * 1 credit per ms
+        // Energy cost = total execution time (generator + solution + cost function) * 1 credit per ms
         const energyCost = totalExecutionTimeMs * ENERGY_COST_PER_MS;
         const effectiveStake = Math.max(0, stake - energyCost);
 
@@ -371,7 +539,7 @@ serve(async (req) => {
       console.log(`Problem ${problem.id} evaluated successfully`);
     }
 
-    return new Response(JSON.stringify({ evaluated: problems.length }), {
+    return new Response(JSON.stringify({ evaluated: readyProblems.length }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error: unknown) {
