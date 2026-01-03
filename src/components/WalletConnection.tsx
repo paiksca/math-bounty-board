@@ -32,7 +32,6 @@ function getErrorMessage(err: unknown): string {
 export function WalletConnection() {
   const { address, isConnected } = useAccount();
   const {
-    connect,
     connectAsync,
     connectors,
     isPending,
@@ -67,13 +66,28 @@ export function WalletConnection() {
   }, [connectError, toast]);
 
   if (!isConnected) {
+    const externalHref = typeof window !== 'undefined' ? window.location.href : '/';
+
+    // Browser wallets (MetaMask, etc.) typically do NOT inject providers inside iframes.
+    // In the embedded preview this will always fail with ProviderNotFoundError.
+    if (isEmbeddedPreview) {
+      return (
+        <Button asChild variant="outline" size="sm">
+          <a href={externalHref} target="_blank" rel="noopener noreferrer">
+            <ExternalLink className="h-4 w-4 mr-2" />
+            Open to connect wallet
+          </a>
+        </Button>
+      );
+    }
+
+    const hasInjectedProvider =
+      typeof window !== 'undefined' && typeof (window as any).ethereum !== 'undefined';
+
     // Filter to unique connectors by name to avoid duplicates
     const uniqueConnectors = connectors.filter(
-      (connector, index, self) =>
-        index === self.findIndex((c) => c.name === connector.name)
+      (connector, index, self) => index === self.findIndex((c) => c.name === connector.name)
     );
-
-    const externalHref = typeof window !== 'undefined' ? window.location.href : '/';
 
     return (
       <DropdownMenu>
@@ -87,11 +101,15 @@ export function WalletConnection() {
           <DropdownMenuLabel>Select Wallet</DropdownMenuLabel>
           <DropdownMenuSeparator />
 
-          {isEmbeddedPreview && (
+          {!hasInjectedProvider && (
             <>
               <DropdownMenuItem asChild className="cursor-pointer">
-                <a href={externalHref} target="_blank" rel="noopener noreferrer">
-                  Open in new tab (recommended)
+                <a
+                  href="https://metamask.io/download/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Install MetaMask
                 </a>
               </DropdownMenuItem>
               <DropdownMenuSeparator />
@@ -102,7 +120,14 @@ export function WalletConnection() {
             <DropdownMenuItem disabled>No wallets detected</DropdownMenuItem>
           ) : (
             uniqueConnectors.map((connector) => {
-              const isReady = (connector as any)?.ready ?? true;
+              const connectorRawId =
+                ((connector as any)?.id ?? (connector as any)?.type ?? '') as string;
+              const connectorName = (connector.name ?? '').toLowerCase();
+              const isInjected =
+                connectorRawId === 'injected' ||
+                connectorName.includes('injected') ||
+                connectorName.includes('metamask');
+              const isReady = isInjected ? hasInjectedProvider : ((connector as any)?.ready ?? true);
 
               return (
                 <DropdownMenuItem
