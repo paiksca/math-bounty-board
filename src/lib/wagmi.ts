@@ -74,15 +74,18 @@ export const ERC20_ABI = [
   },
 ] as const;
 
-// WalletConnect Project ID - for production, get one from https://cloud.walletconnect.com
-const WALLETCONNECT_PROJECT_ID = 'demo-project-id';
+// WalletConnect Project ID - optional.
+// If not set, WalletConnect won't be offered and users can connect via browser wallets (e.g., MetaMask).
+const WALLETCONNECT_PROJECT_ID = import.meta.env.VITE_WALLETCONNECT_PROJECT_ID;
+
+const connectors = [injected()];
+if (WALLETCONNECT_PROJECT_ID) {
+  connectors.push(walletConnect({ projectId: WALLETCONNECT_PROJECT_ID }));
+}
 
 export const config = createConfig({
   chains: [sepolia],
-  connectors: [
-    injected(),
-    walletConnect({ projectId: WALLETCONNECT_PROJECT_ID }),
-  ],
+  connectors,
   transports: {
     [sepolia.id]: http(),
   },
